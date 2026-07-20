@@ -1,26 +1,26 @@
-# local-term-java
+# local-terminal-java
 
-A Windows desktop terminal manager built on JediTerm + pty4j + ConPTY.
+A Windows desktop terminal manager built on JediTerm + pty4j + ConPTY.  
+
+![snapshot](local_terminal_snapshot.png)
 
 ## Prerequisites
 - JDK 17 (on PATH; JAVA_HOME will be auto-detected by the install script)
 - Maven 3.9+
-- JediTerm source at `..\jediterm` (sibling directory)
+- JediTerm
 
 ## Setup
-1. Install JediTerm to local Maven repo (one time):
-   ```
-   scripts\install-jediterm.bat
-   ```
-2. Build:
+
+1. Build:
    ```
    mvn clean package
    ```
-3. Run:
+2. Run:
    ```
+   target/dist/Local Terminal/Local Terminal.exe
+   or
    java -jar target\local-term-java-0.1.0-SNAPSHOT.jar
    ```
-
 ## Manual integration test
 1. Run app — tree panel appears empty.
 2. Right-click root → Add Child → fill `name`, `shellPath` (e.g. `C:\Windows\System32\cmd.exe`), `startPath` (e.g. `C:\Users\<your-username>`). Click OK.
@@ -80,7 +80,7 @@ demand. Re-runs are idempotent.
 
 These verify the optional auto-script feature on shell nodes.
 
-1. Add a shell node with `shellPath = C:\Windows\System32\cmd.exe`,
+1. Add a shell node with `shellPath = C:\Windows\System32\cmd.exe` or `shellPath = cmd`,
    enable auto-script, and add exactly one step:
    - Wait pattern: `Microsoft Windows`
    - Command: `echo hello from auto-script`

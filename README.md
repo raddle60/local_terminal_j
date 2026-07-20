@@ -7,7 +7,6 @@ A Windows desktop terminal manager built on JediTerm + pty4j + ConPTY.
 ## Prerequisites
 - JDK 17 (on PATH; JAVA_HOME will be auto-detected by the install script)
 - Maven 3.9+
-- JediTerm
 
 ## Setup
 

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Bash -->
+  <rect width="64" height="64" rx="10" fill="#1a1a2e"/>
+  <!-- Terminal prompt bracket -->
+  <text x="8" y="42" font-family="monospace" font-size="32" font-weight="bold" fill="#4CAF50">$</text>
+  <!-- BASH text -->
+  <text x="4" y="58" font-family="monospace" font-size="11" fill="#80cbc4" letter-spacing="1">bash</text>
+  <!-- Decorative underscore cursor -->
+  <rect x="28" y="44" width="12" height="3" fill="#4CAF50" opacity="0.8"/>
+  <!-- Side accent line -->
+  <rect x="0" y="0" width="4" height="64" rx="2" fill="#4CAF50"/>
+</svg>

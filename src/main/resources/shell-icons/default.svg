@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Generic terminal silhouette (default icon for unmatched shells) -->
+  <!-- Terminal body -->
+  <rect x="6" y="12" width="52" height="40" rx="4" ry="4" fill="#606060"/>
+  <!-- Base -->
+  <rect x="26" y="52" width="12" height="4" fill="#202020"/>
+  <rect x="20" y="56" width="24" height="2" fill="#202020"/>
+  <!-- Screen lines -->
+  <rect x="10" y="16" width="44" height="4" fill="#e0e0e0"/>
+  <rect x="10" y="24" width="44" height="4" fill="#e0e0e0"/>
+  <rect x="10" y="32" width="44" height="4" fill="#e0e0e0"/>
+  <rect x="10" y="40" width="28" height="4" fill="#e0e0e0"/>
+</svg>

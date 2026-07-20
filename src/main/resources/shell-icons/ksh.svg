@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- ksh (KornShell) -->
+  <rect width="64" height="64" rx="10" fill="#1b2838"/>
+  <!-- Corn/grain icon (Korn pun) -->
+  <ellipse cx="32" cy="26" rx="8" ry="14" fill="#f9a825" opacity="0.9"/>
+  <ellipse cx="22" cy="30" rx="6" ry="11" fill="#fbc02d" opacity="0.7"/>
+  <ellipse cx="42" cy="30" rx="6" ry="11" fill="#fbc02d" opacity="0.7"/>
+  <!-- Stem -->
+  <line x1="32" y1="40" x2="32" y2="52" stroke="#558b2f" stroke-width="3" stroke-linecap="round"/>
+  <path d="M32 46 Q22 42 18 36" fill="none" stroke="#558b2f" stroke-width="2" stroke-linecap="round"/>
+  <!-- Label -->
+  <text x="4" y="61" font-family="monospace" font-size="11" fill="#ffd54f" letter-spacing="1">ksh</text>
+</svg>

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Zsh -->
+  <rect width="64" height="64" rx="10" fill="#1a0533"/>
+  <!-- Z shape -->
+  <polyline points="14,14 50,14 20,50 50,50" fill="none" stroke="#b39ddb" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- zsh label -->
+  <text x="4" y="61" font-family="monospace" font-size="10" fill="#ce93d8" letter-spacing="1">zsh</text>
+  <!-- Top accent -->
+  <rect x="0" y="0" width="64" height="4" rx="2" fill="#9c27b0"/>
+</svg>

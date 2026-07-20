@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- dash (Debian Almquist Shell) -->
+  <rect width="64" height="64" rx="10" fill="#1a237e"/>
+  <!-- Dash/minus symbol large -->
+  <rect x="12" y="27" width="40" height="8" rx="4" fill="#5c6bc0"/>
+  <!-- Speed lines suggesting fast/lightweight -->
+  <line x1="8" y1="18" x2="30" y2="18" stroke="#7986cb" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+  <line x1="14" y1="12" x2="30" y2="12" stroke="#7986cb" stroke-width="2" stroke-linecap="round" opacity="0.4"/>
+  <line x1="8" y1="46" x2="30" y2="46" stroke="#7986cb" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+  <line x1="14" y1="52" x2="30" y2="52" stroke="#7986cb" stroke-width="2" stroke-linecap="round" opacity="0.4"/>
+  <!-- Label -->
+  <text x="4" y="61" font-family="monospace" font-size="10" fill="#9fa8da" letter-spacing="1">dash</text>
+</svg>

@@ -1,0 +1,342 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>local.term</groupId>
+  <artifactId>local-term-java</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+
+  <properties>
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <jediterm.version>3.73</jediterm.version>
+    <pty4j.version>0.13.8</pty4j.version>
+    <jackson.version>2.17.2</jackson.version>
+    <slf4j.version>2.0.13</slf4j.version>
+    <junit.version>5.10.2</junit.version>
+    <commons.imaging.version>1.0.0-alpha6</commons.imaging.version>
+    <batik.version>1.18</batik.version>
+    <flatlaf.version>3.6</flatlaf.version>
+    <jpackage.plugin.version>1.7.4</jpackage.plugin.version>
+    <!-- Default main class for `mvn exec:java`. Overridable via -Dexec.mainClass=... -->
+    <exec.mainClass>local.term.App</exec.mainClass>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.jetbrains.jediterm</groupId>
+      <artifactId>jediterm-core</artifactId>
+      <version>${jediterm.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.jetbrains.jediterm</groupId>
+      <artifactId>jediterm-ui</artifactId>
+      <version>${jediterm.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.jetbrains.pty4j</groupId>
+      <artifactId>pty4j</artifactId>
+      <version>${pty4j.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>${jackson.version}</version>
+    </dependency>
+    <!-- Multi-format icon loading (Feature 3): SVG (Batik) and ICO (Commons
+         Imaging) aren't covered by javax.imageio in JDK 17. -->
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-imaging</artifactId>
+      <version>${commons.imaging.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.xmlgraphics</groupId>
+      <artifactId>batik-rasterizer</artifactId>
+      <version>${batik.version}</version>
+    </dependency>
+    <!-- FlatLaf: modern Swing L&F with built-in dark theme (FlatDarkLaf).
+         Theming includes Swing components AND dialog/popup text — Nimbus
+         + manual UIManager overrides didn't theme JOptionPane titles
+         consistently, which is why we switched to FlatLaf. -->
+    <dependency>
+      <groupId>com.formdev</groupId>
+      <artifactId>flatlaf</artifactId>
+      <version>${flatlaf.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>${slf4j.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <version>${slf4j.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.8.0</version>
+        <!-- Maven 3.3.x does not always forward the
+             maven.compiler.source/target properties to the compiler plugin,
+             which then defaults to 1.8 and rejects the project's Java 17
+             features (records, pattern-matching instanceof). Hard-code
+             source/target and release here so the class file format and
+             the source level both match JDK 17 even on older Maven. -->
+        <configuration>
+          <source>17</source>
+          <target>17</target>
+          <release>17</release>
+        </configuration>
+      </plugin>
+      <!-- FontUtils builds composite fonts via reflection on sun.font.CompositeFont,
+           which is closed by default in JDK 17's module system. -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.0.0</version>
+        <configuration>
+          <mainClass>${exec.mainClass}</mainClass>
+          <arguments>
+            <argument>-J--add-opens=java.desktop/sun.font=ALL-UNNAMED</argument>
+          </arguments>
+        </configuration>
+      </plugin>
+      <plugin>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.2.4</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals><goal>shade</goal></goals>
+            <configuration>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>local.term.App</mainClass>
+                </transformer>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+              </transformers>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- Isolate the fat jar in its own input directory before jpackage
+           runs. jpackage's input flag copies the directory contents into
+           the app-image app folder; pointing it at target/ would also
+           pull in the original un-shaded classes jar, the dependency
+           reduced pom, and stale test class folders. A dedicated
+           target/jpackage-input/ directory keeps the image bundle
+           minimal. Bound to the package phase AFTER maven-shade-plugin
+           so the fat jar exists when this runs. -->
+      <plugin>
+        <artifactId>maven-antrun-plugin</artifactId>
+        <version>3.1.0</version>
+        <executions>
+          <!-- Build a slim custom JRE via jlink and feed it to jpackage. Runs in
+               the `package` phase AFTER maven-shade-plugin (so the shaded jar is
+               available) and BEFORE jpackage-maven-plugin (so target/custom-jre/
+               exists when jpackage reads runtimeImage). Gated on
+               ${jpackage.skip} so `mvn package -Djpackage.skip=true` skips this
+               step too.
+
+               Module list is computed dynamically: `jdeps` invoked with the
+               print-module-deps flag emits a comma-separated list of the
+               modules the shaded jar directly references, in the format jlink
+               expects. We append a small fixed list of reflective additions
+               that jdeps cannot see:
+                 - java.xml, jdk.xml.dom: Batik's DOM packages
+                   (org.w3c.dom.*, javax.xml.*) loaded at runtime.
+                 - jdk.unsupported: FontUtils reaches into
+                   sun.font.CompositeFont via reflection (already opened via
+                   add-opens elsewhere in the build).
+                 - jdk.accessibility: Windows installs sometimes ship
+                   `~/.accessibility.properties` referencing
+                   com.sun.java.accessibility.AccessBridge; without this
+                   module AWT throws `AWTError: Assistive Technology not
+                   found` at toolkit init.
+               If you add a new dependency that pulls in a new reflective
+               module, add it to the `jdk.modules.extra` property below. -->
+          <execution>
+            <id>build-custom-jre</id>
+            <phase>package</phase>
+            <goals><goal>run</goal></goals>
+            <configuration>
+              <skip>${jpackage.skip}</skip>
+              <target>
+                <!-- JDK 17's ${java.home} is the JDK root on all OSes; only the
+                     .exe suffix differs. -->
+                <condition property="jdeps.executable"
+                           value="${java.home}/bin/jdeps.exe"
+                           else="${java.home}/bin/jdeps">
+                  <os family="windows"/>
+                </condition>
+                <condition property="jlink.executable"
+                           value="${java.home}/bin/jlink.exe"
+                           else="${java.home}/bin/jlink">
+                  <os family="windows"/>
+                </condition>
+                <delete dir="${project.build.directory}/custom-jre"
+                        failonerror="false"/>
+                <!-- jdeps invoked with the print-module-deps flag prints a single
+                     comma-separated line like `java.base,java.desktop,java.sql`
+                     (jlink's add-modules format). Stdout is redirected to a
+                     file and read back via <loadfile>; outputproperty mixes
+                     stdout/stderr on Windows, which corrupts the captured
+                     value when jdeps emits split-package warnings to stderr. -->
+                <exec executable="${jdeps.executable}"
+                      output="${project.build.directory}/jdeps-modules.txt"
+                      failonerror="true"
+                      failifexecutionfails="true">
+                  <arg value="-q"/>
+                  <arg value="--print-module-deps"/>
+                  <arg value="--ignore-missing-deps"/>
+                  <arg value="--multi-release"/>
+                  <arg value="17"/>
+                  <arg value="${project.build.directory}/${project.build.finalName}.jar"/>
+                </exec>
+                <loadfile property="jdk.modules.list"
+                          srcFile="${project.build.directory}/jdeps-modules.txt">
+                  <filterchain>
+                    <striplinebreaks/>
+                  </filterchain>
+                </loadfile>
+                <!-- Reflective additions jdeps can't detect. -->
+                <property name="jdk.modules.extra"
+                          value="java.xml,jdk.accessibility,jdk.unsupported,jdk.xml.dom"/>
+                <property name="jdk.modules.full"
+                          value="${jdk.modules.list},${jdk.modules.extra}"/>
+                <!-- jlink: build the slim JRE. The compress flag uses the JDK 17
+                     numeric form (=2); the named forms zip and zip-9 are
+                     JDK 21+. jlink reads jmods from ${java.home}/jmods by
+                     default since we run on a JDK. -->
+                <exec executable="${jlink.executable}"
+                      failonerror="false"
+                      failifexecutionfails="false"
+                      outputproperty="jlink.output"
+                      resultproperty="jlink.rc">
+                  <arg value="--module-path"/>
+                  <arg value="${java.home}/jmods"/>
+                  <arg value="--add-modules"/>
+                  <arg value="${jdk.modules.full}"/>
+                  <arg value="--strip-debug"/>
+                  <arg value="--no-man-pages"/>
+                  <arg value="--no-header-files"/>
+                  <arg value="--strip-native-commands"/>
+                  <arg value="--compress=2"/>
+                  <arg value="--output"/>
+                  <arg value="${project.build.directory}/custom-jre"/>
+                </exec>
+                <fail message="jlink failed (rc=${jlink.rc}, modules=${jdk.modules.full}): ${jlink.output}">
+                  <condition>
+                    <not>
+                      <equals arg1="${jlink.rc}" arg2="0"/>
+                    </not>
+                  </condition>
+                </fail>
+              </target>
+            </configuration>
+          </execution>
+          <execution>
+            <id>stage-fat-jar-for-jpackage</id>
+            <phase>package</phase>
+            <goals><goal>run</goal></goals>
+            <configuration>
+              <target>
+                <delete dir="${project.build.directory}/jpackage-input"
+                        failonerror="false"/>
+                <mkdir dir="${project.build.directory}/jpackage-input"/>
+                <copy todir="${project.build.directory}/jpackage-input"
+                      file="${project.build.directory}/${project.build.finalName}.jar"
+                      failonerror="true"/>
+              </target>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- Build a Windows .exe installer from the shaded jar. Bound to the
+           `package` phase AFTER maven-shade-plugin (declared above) so the
+           shaded jar already exists at target/${project.build.finalName}.jar
+           when jpackage runs. Requires JDK 17+ with jpackage.exe on PATH
+           (`d:\application\jdk-17.0.4\bin\jpackage.exe`).
+           Set -Djpackage.skip=true to skip on non-Windows machines or
+           during quick iterative loops. -->
+      <plugin>
+        <groupId>org.panteleyev</groupId>
+        <artifactId>jpackage-maven-plugin</artifactId>
+        <version>${jpackage.plugin.version}</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals><goal>jpackage</goal></goals>
+            <configuration>
+              <skip>${jpackage.skip}</skip>
+              <!-- The mojo exposes `name` and `destination` as parameter
+                   names (not the CLI's name/dest flags); they map to the
+                   jpackage name and dest CLI flags respectively. -->
+              <name>Local Terminal</name>
+              <!-- jpackage rejects Maven's SNAPSHOT suffix; use the bare
+                   dotted version. The Mojo does not interpolate
+                   parsedVersion so it's hardcoded to track project.version
+                   without the -SNAPSHOT suffix. -->
+              <appVersion>0.1.0</appVersion>
+              <vendor>local</vendor>
+              <!-- Windows .ico with the embedded 256×256 PNG that the
+                   user already set as the in-app window icon. jpackage
+                   bakes this into the .exe (and the Start-menu shortcut /
+                   taskbar pinned icon) so it stays consistent with the
+                   frame icon. -->
+              <icon>${project.basedir}/src/main/resources/terminal.ico</icon>
+              <input>${project.build.directory}/jpackage-input</input>
+              <!-- Output to target/dist so a `mvn clean` resets it
+                   alongside the jar. Field name is `destination`, not
+                   `dest` (jpackage-maven-plugin Mojo exposes destination
+                   instead of the CLI's short dest flag). -->
+              <destination>${project.build.directory}/dist</destination>
+              <mainJar>${project.build.finalName}.jar</mainJar>
+              <mainClass>local.term.App</mainClass>
+              <!-- APP_IMAGE produces a self-contained folder with the launcher
+                   .exe inside it (LocalTerminal.exe) and a bundled JRE —
+                   no Windows installer, no WiX requirement. The user can
+                   zip the folder or run the launcher directly. -->
+              <type>APP_IMAGE</type>
+              <!-- Slim custom JRE built by the maven-antrun-plugin
+                   `build-custom-jre` execution (declared above). Without
+                   this, jpackage copies the entire JDK (~125 MB) into
+                   the app image. -->
+              <runtimeImage>${project.build.directory}/custom-jre</runtimeImage>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.2.5</version>
+        <configuration>
+          <argLine>--add-opens java.desktop/sun.font=ALL-UNNAMED</argLine>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

@@ -1,0 +1,492 @@
+package local.term;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.awt.Font;
+import java.awt.FontMetrics;
+import java.awt.Graphics2D;
+import java.awt.GraphicsEnvironment;
+import java.awt.image.BufferedImage;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+/**
+ * Font helpers.
+ *
+ * - {@link #isMonospaced(String)} — probes glyph metrics to detect fixed-width.
+ * - {@link #hasCjkGlyphs(String)} — probes whether a font has Chinese/Japanese
+ *   glyphs (so we know whether to suggest a CJK-capable font as a substitute).
+ * - {@link #hasEmojiGlyphs(String)} — probes whether a font can render emoji.
+ * - {@link #hasGeneralSymbolGlyphs(String)} — probes whether a font can render
+ *   general Unicode symbols (box-drawing, arrows, math, etc.).
+ * - {@link #findCjkFont(int)} — picks a system CJK font to use as fallback.
+ * - {@link #findEmojiFont(int)} — picks a system emoji font.
+ * - {@link #findGeneralSymbolFont(int)} — picks a system symbol font.
+ * - {@link #createCompositeFont(Font, Font)} — currently a no-op pass-through;
+ *   retained as the extension point for true composite-font construction if a
+ *   reliable JDK-17-safe path is found.
+ */
+public final class FontUtils {
+  private static final Logger LOG = LoggerFactory.getLogger(FontUtils.class);
+
+  private FontUtils() {}
+
+  /** ASCII chars known to differ in width on proportional fonts. */
+  private static final char[] MONOSPACE_PROBE = {'i', 'M', 'W', 'a', '.', ':', '0'};
+
+  /**
+   * Chinese characters used to detect whether a font has CJK coverage.
+   * Kept Chinese-only on purpose: {@link Font#canDisplayUpTo} returns -1 only
+   * when the font has every character in the probe, so mixing in Japanese
+   * kana or Korean Hangul makes fonts that only ship Chinese (e.g. Microsoft
+   * YaHei) look like they have no CJK at all.
+   *
+   * <p>A handful of common Simplified-Chinese glyphs spanning common and
+   * less-common code points (广, 繁) so a font with only the basic
+   * Simplified-Chinese subset is also caught.
+   */
+  private static final String CJK_PROBE = "中文你好世界繁简体";
+
+  /**
+   * Emoji probe — covers simple emoji, modifier sequences (skin tone), and
+   * ZWJ sequences (family emoji). Kept as plain BMP/SMP code points so the
+   * probe itself is platform-independent; we rely on
+   * {@link Font#canDisplayUpTo} to tell us whether the font ships the
+   * corresponding color glyphs.
+   */
+  private static final String EMOJI_PROBE = "😀🚀✨❤️⭐";
+
+  /**
+   * General-symbol probe — box-drawing, arrows, geometric shapes, math
+   * symbols. Things Claude Code or generic CLI output routinely prints and
+   * that Microsoft YaHei / Consolas typically lack.
+   */
+  private static final String SYMBOL_PROBE = "┌─┐│└┘←→↑↓π∑∞±≠";
+
+  /** System CJK fonts to try, ordered by preference. */
+  private static final String[] CJK_FONT_CANDIDATES = {
+      // CJK monospace (best — keeps columns aligned)
+      "Microsoft YaHei Mono", "Sarasa Mono SC", "Sarasa Mono TC",
+      "Cascadia Mono", "Cascadia Code",
+      // CJK proportional (always present on Chinese Windows)
+      "Microsoft YaHei UI", "Microsoft YaHei",
+      "PingFang SC", "Hiragino Sans GB",
+      // Last-resort logical fonts that ship with Java and have CJK fallback
+      "Dialog", "SansSerif"
+  };
+
+  /**
+   * System color-emoji fonts to try, ordered by preference. Color-emoji
+   * fonts ship on most desktop OS installs but are platform-specific;
+   * {@link #hasEmojiGlyphs(String)} silently skips missing ones.
+   */
+  private static final String[] EMOJI_FONT_CANDIDATES = {
+      // Windows 8+
+      "Segoe UI Emoji",
+      // macOS
+      "Apple Color Emoji",
+      // Linux / cross-platform
+      "Noto Color Emoji", "Noto Emoji",
+      // Last-resort: many modern CJK fonts (YaHei UI, Sarasa) include
+      // a small set of monochrome emoji. Useful as a last-resort that
+      // renders SOMETHING instead of tofu when no color-emoji font is
+      // installed.
+      "Segoe UI Symbol", "Symbola", "DejaVu Sans"
+  };
+
+  /**
+   * System general-symbol fonts to try. These cover box-drawing chars,
+   * arrows, geometric shapes, math symbols — the kind of thing Claude
+   * Code and most CLI tools emit that is neither Latin nor CJK nor emoji.
+   */
+  private static final String[] SYMBOL_FONT_CANDIDATES = {
+      // Windows
+      "Segoe UI Symbol",
+      // Cross-platform fallback fonts (Symbola is the de-facto "I have
+      // every Unicode glyph" font; DejaVu Sans has broad coverage on
+      // Linux).
+      "Symbola", "DejaVu Sans", "DejaVu Sans Condensed",
+      // Last-resort: Java's logical fonts always exist and have Unicode
+      // fallback built into the runtime.
+      "Dialog", "SansSerif"
+  };
+
+  public static boolean isMonospaced(String family) {
+    if (family == null) return false;
+    Set<String> available = availableFamilies();
+    if (!available.contains(family)) return false;
+
+    Font font = new Font(family, Font.PLAIN, 12);
+    Graphics2D g = scratchGraphics();
+    try {
+      FontMetrics fm = g.getFontMetrics(font);
+      int first = fm.charWidth(MONOSPACE_PROBE[0]);
+      for (int i = 1; i < MONOSPACE_PROBE.length; i++) {
+        if (fm.charWidth(MONOSPACE_PROBE[i]) != first) return false;
+      }
+      return true;
+    } finally {
+      g.dispose();
+    }
+  }
+
+  /**
+   * True if the named font can render all probe CJK characters
+   * ({@code canDisplayUpTo} returns -1). Reliable across platforms.
+   */
+  public static boolean hasCjkGlyphs(String family) {
+    if (family == null) return false;
+    if (!availableFamilies().contains(family)) return false;
+    Font font = new Font(family, Font.PLAIN, 12);
+    return font.canDisplayUpTo(CJK_PROBE) == -1;
+  }
+
+  /**
+   * Find a font that BOTH is installed, has CJK glyphs, AND is monospaced.
+   *
+   * <p>Returns {@code null} when no monospace CJK-capable font is installed.
+   * Callers (the Settings dialog, the font picker dropdown) treat null as
+   * "user must install Microsoft YaHei Mono / Sarasa Mono SC / Cascadia
+   * Code 2404+ before picking a terminal font".
+   *
+   * <p>Returns null (never a proportional fallback) because substituting a
+   * Latin-only font like Consolas with a proportional CJK font like
+   * Microsoft YaHei UI produces visibly uneven spacing in a fixed-width
+   * terminal grid — exactly what the user complained about. Better to
+   * surface "no qualified font" than to silently degrade.
+   */
+  public static Font findCjkFont(int size) {
+    Set<String> have = availableFamilies();
+    for (String name : CJK_FONT_CANDIDATES) {
+      if (have.contains(name) && hasCjkGlyphs(name) && isMonospaced(name)) {
+        return new Font(name, Font.PLAIN, size);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Find any installed CJK-capable font, ignoring the monospaced requirement.
+   *
+   * <p>Used by callers that just need to <em>render</em> CJK characters —
+   * notably the Settings dialog preview label — where cell-grid alignment
+   * isn't a concern. Preferring a monospaced CJK font keeps preview-text
+   * alignment tidy (the sample label is easier to scan when each glyph sits
+   * in a fixed-width column), so we still try mono first via
+   * {@link #findCjkFont}; only fall through to proportional candidates when
+   * that returns {@code null}.
+   *
+   * <p>Returns {@code null} only when no font on the system has CJK glyphs,
+   * which on a real Chinese-localised install is essentially impossible —
+   * Java's logical fonts ({@code Dialog}, {@code SansSerif}) have CJK
+   * fallback even on minimal containers.
+   *
+   * <p>Do NOT use this for the terminal pane: per-run substitution with a
+   * proportional fallback breaks grid alignment. Use {@link #findCjkFont}
+   * for that and surface a clear "no qualified font, install …" message
+   * instead.
+   */
+  public static Font findAnyCjkFont(int size) {
+    Font mono = findCjkFont(size);
+    if (mono != null) return mono;
+    Set<String> have = availableFamilies();
+    for (String name : CJK_FONT_CANDIDATES) {
+      if (have.contains(name) && hasCjkGlyphs(name)) {
+        return new Font(name, Font.PLAIN, size);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Resolves the CJK fallback for the <em>terminal pane</em> at runtime.
+   * Prefers a monospaced CJK font (kept by {@link #findCjkFont}); falls back
+   * to <em>any</em> installed CJK-capable font ({@link #findAnyCjkFont})
+   * when no mono option exists.
+   *
+   * <p>The proportional fallback exists because the user reported tofu in the
+   * live terminal — the strict "mono CJK or nothing" policy left the renderer
+   * with nothing to draw non-ASCII characters when Consolas was the chosen
+   * font and no qualified mono CJK font was installed. The trade-off:
+   * rendering CJK at all beats tofu. Yes, a proportional font per-run
+   * produces slightly uneven column widths in a fixed-cell grid, and the
+   * Settings dialog explains this in the warning text. The threshold for
+   * "needs fallback" is {@code > 0x7F} (see
+   * {@link CompositeFontPanel#runNeedsCjk}), so pure-ASCII lines still use
+   * the primary mono font and stay aligned.
+   *
+   * <p>Returns {@code null} only on a system where no font installed has
+   * CJK glyphs — vanishingly rare in practice.
+   */
+  public static Font findTerminalCjkFallback(int size) {
+    Font mono = findCjkFont(size);
+    if (mono != null) return mono;
+    return findAnyCjkFont(size);
+  }
+
+  /**
+   * True when the named font can render all probe emoji characters
+   * ({@link #EMOJI_PROBE}). False on platforms where the font isn't
+   * installed or doesn't ship emoji glyphs (e.g. a Latin-only Consolas
+   * variant).
+   *
+   * <p>{@link Font#canDisplayUpTo} returning -1 means every char in the
+   * probe is displayable — i.e. the font really has the emoji glyphs.
+   */
+  public static boolean hasEmojiGlyphs(String family) {
+    if (family == null) return false;
+    if (!availableFamilies().contains(family)) return false;
+    Font font = new Font(family, Font.PLAIN, 12);
+    return font.canDisplayUpTo(EMOJI_PROBE) == -1;
+  }
+
+  /**
+   * True when the named font can render all probe general-symbol characters
+   * ({@link #SYMBOL_PROBE}): box-drawing, arrows, geometric shapes, math.
+   * Used to detect fonts that can render Unicode-symbol CLI output that
+   * neither Latin nor CJK fonts typically cover.
+   */
+  public static boolean hasGeneralSymbolGlyphs(String family) {
+    if (family == null) return false;
+    if (!availableFamilies().contains(family)) return false;
+    Font font = new Font(family, Font.PLAIN, 12);
+    return font.canDisplayUpTo(SYMBOL_PROBE) == -1;
+  }
+
+  /**
+   * Find an installed font that ships the {@link #EMOJI_PROBE} emoji
+   * glyphs. Returns {@code null} when no emoji-capable font is installed
+   * (rare on Windows / macOS, possible on minimal Linux containers).
+   *
+   * <p>Color-emoji fonts are platform-specific:
+   * <ul>
+   *   <li>Windows — Segoe UI Emoji (color glyphs).</li>
+   *   <li>macOS — Apple Color Emoji.</li>
+   *   <li>Linux — Noto Color Emoji (Debian / Ubuntu) or Noto Emoji
+   *       (Fedora / older).</li>
+   * </ul>
+   * Java's logical fonts ({@code Dialog}, {@code SansSerif}) generally
+   * do NOT ship color emoji, so they're intentionally not in
+   * {@link #EMOJI_FONT_CANDIDATES}. If you need color emoji on Linux,
+   * install Noto Color Emoji.
+   */
+  public static Font findEmojiFont(int size) {
+    Set<String> have = availableFamilies();
+    for (String name : EMOJI_FONT_CANDIDATES) {
+      if (have.contains(name) && hasEmojiGlyphs(name)) {
+        return new Font(name, Font.PLAIN, size);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Find an installed font that ships the {@link #SYMBOL_PROBE} general
+   * symbols. Returns {@code null} when no symbol-capable font is installed
+   * (very rare; Java's logical fonts ship broad Unicode coverage and are
+   * tried as last-resort).
+   *
+   * <p>Used as a fallback for non-ASCII runs that aren't CJK and aren't
+   * emoji: box-drawing chars (┌─┐), arrows (←→↑↓), math symbols (π∑),
+   * geometric shapes (●■◆). Claude Code and most CLI tools emit these
+   * freely and a Latin-only or CJK-only font will render them as tofu.
+   */
+  public static Font findGeneralSymbolFont(int size) {
+    Set<String> have = availableFamilies();
+    for (String name : SYMBOL_FONT_CANDIDATES) {
+      if (have.contains(name) && hasGeneralSymbolGlyphs(name)) {
+        return new Font(name, Font.PLAIN, size);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Combine {@code primary} (used for Latin) with {@code fallback} (used for
+   * everything else) into a single Font. Enables the terminal pane to render
+   * CJK characters via the fallback font even when the user picks a Latin-only
+   * font like Consolas.
+   *
+   * <p>Construction would require {@code sun.font.CompositeFont}, an internal
+   * class that does not extend {@code java.awt.Font} on JDK 17+ (it extends
+   * {@code Font2D}), so the constructed object cannot be returned as a Font
+   * without a cast the module system blocks. Rather than dance around the
+   * reflection, we return the {@code primary} font and rely on Java2D's
+   * native glyph-level font fallback at draw time — Windows font linking
+   * substitutes CJK glyphs on the fly when {@code Graphics2D.drawChars}
+   * encounters a missing glyph.
+   *
+   * <p>This means the user's chosen font is used verbatim; if it really is
+   * missing a CJK glyph, the OS finds a substitute (typically SimSun on
+   * Chinese Windows). If that doesn't render the way the user expects, the
+   * Settings dialog's "preview" line shows the actual rendering for any font.
+   *
+   * @return always {@code primary}; method is retained for API stability.
+   */
+  public static Font createCompositeFont(Font primary, Font fallback) {
+    if (primary == null) return fallback;
+    if (fallback == null) return primary;
+    LOG.debug("createCompositeFont: returning primary={}, fallback={} (relying on OS font linking)",
+        primary.getFamily(), fallback.getFamily());
+    return primary;
+  }
+
+  /**
+   * Resolve a terminal font. The terminal pane renders text in fixed-width
+   * cells, so the picked family goes through three substitutions in order:
+   *
+   * <ol>
+   *   <li><b>No CJK glyphs</b> — pick a CJK-capable font ({@link #findCjkFont}).
+   *       Required so non-ASCII text renders at all on a Latin-only pick like
+   *       Consolas / Courier New.</li>
+   *   <li><b>CJK glyphs but proportional</b> — also substitute. Microsoft
+   *       YaHei, PingFang SC, etc. ship CJK at full width and Latin at
+   *       proportional width, which in a fixed-cell terminal looks like wide
+   *       uneven gaps between Chinese and Latin characters. Pick a
+   *       monospace CJK font ({@link #findCjkFont}, which prefers
+   *       Microsoft YaHei Mono / Sarasa Mono / Cascadia Mono).</li>
+   *   <li><b>Otherwise</b> — keep the picked font verbatim.</li>
+   * </ol>
+   *
+   * <p>The result is always a single {@link Font} (composite-font
+   * construction via {@code sun.font} is fragile on JDK 17; per-run font
+   * selection is handled at the paint layer in
+   * {@link CompositeFontPanel}).
+   *
+   * <p>Callers can compare {@link Font#getFamily} of the result against the
+   * input to detect substitution.
+   */
+  public static Font resolveTerminalFont(String family, int size) {
+    if (family == null) family = Font.MONOSPACED;
+    Font chosen = new Font(family, Font.PLAIN, size);
+    if (!hasCjkGlyphs(family) || isProportionalCjkFamily(family)) {
+      Font substitute = findCjkFont(size);
+      if (substitute != null && !substitute.getFamily().equalsIgnoreCase(family)) {
+        return substitute;
+      }
+    }
+    return chosen;
+  }
+
+  /**
+   * True when {@code family} has CJK glyphs but isn't monospaced — i.e.
+   * picking it for a terminal will produce visibly uneven CJK-vs-Latin
+   * spacing. Used by {@link #resolveTerminalFont} to decide whether to
+   * pick a monospace CJK substitute.
+   *
+   * <p>Families that lack CJK glyphs return {@code false} (handled by the
+   * "no CJK" branch instead). Mono CJK families (YaHei Mono, Sarasa Mono,
+   * Cascadia Mono) return {@code false}.
+   */
+  public static boolean isProportionalCjkFamily(String family) {
+    if (family == null) return false;
+    if (!hasCjkGlyphs(family)) return false;
+    // isMonospaced returns false when the family isn't installed; combined
+    // with the hasCjkGlyphs check above, that means "not installed" — treat
+    // as not proportional (it'll fall back via findCjkFont for other reasons).
+    return !isMonospaced(family);
+  }
+
+  /**
+   * True when {@code resolveTerminalFont} would substitute the requested
+   * family (because it lacks CJK glyphs, or because it's CJK-proportional
+   * and looks bad in a terminal). Callers can use this to decide whether
+   * to show the user a warning.
+   */
+  public static boolean wouldSubstitute(String family) {
+    if (family == null) return false;
+    if (!hasCjkGlyphs(family)) return true;
+    return isProportionalCjkFamily(family);
+  }
+
+  private static Set<String> availableFamilies() {
+    return new HashSet<>(Arrays.asList(
+        GraphicsEnvironment.getLocalGraphicsEnvironment()
+            .getAvailableFontFamilyNames()));
+  }
+
+  // ---- Per-category family listings for the Settings dialog ----
+  //
+  // Each returns installed families that can render the given category,
+  // preference candidates floated to the top and the rest sorted
+  // alphabetically. Results are cached because probing every installed
+  // family with canDisplayUpTo loads each font (a few hundred fonts × a
+  // short probe), which is wasteful to repeat every time the dialog opens.
+
+  private static final java.util.Map<String, List<String>> CATEGORY_CACHE =
+      new java.util.concurrent.ConcurrentHashMap<>();
+
+  /**
+   * Monospaced families — for the primary/Latin terminal font. Monospace is
+   * required so ASCII cells stay a fixed width.
+   */
+  public static List<String> monospaceFamilies() {
+    return CATEGORY_CACHE.computeIfAbsent("mono",
+        k -> familiesMatching(FontUtils::isMonospaced, MONO_PREFS));
+  }
+
+  /**
+   * CJK-capable families — for the Chinese/Japanese/Korean fallback slot.
+   * Monospace CJK candidates are floated to the top so double-width glyphs
+   * land on exact 2-cell boundaries.
+   */
+  public static List<String> cjkFamilies() {
+    return CATEGORY_CACHE.computeIfAbsent("cjk",
+        k -> familiesMatching(FontUtils::hasCjkGlyphs, CJK_FONT_CANDIDATES));
+  }
+
+  /**
+   * Families that render the general-symbol probe (box-drawing, arrows,
+   * math, dingbats like ✔ ✗) — for the symbol fallback slot. Text-presentation
+   * symbol fonts are preferred here; they render these glyphs close to one
+   * cell wide instead of the ~2.4-cell color-emoji rendering.
+   */
+  public static List<String> symbolFamilies() {
+    return CATEGORY_CACHE.computeIfAbsent("symbol",
+        k -> familiesMatching(FontUtils::hasGeneralSymbolGlyphs, SYMBOL_FONT_CANDIDATES));
+  }
+
+  /** Families that render the emoji probe — for the emoji fallback slot. */
+  public static List<String> emojiFamilies() {
+    return CATEGORY_CACHE.computeIfAbsent("emoji",
+        k -> familiesMatching(FontUtils::hasEmojiGlyphs, EMOJI_FONT_CANDIDATES));
+  }
+
+  /** Preferred monospace families for the primary-font picker. */
+  private static final String[] MONO_PREFS = {
+      "Microsoft YaHei Mono", "Sarasa Mono SC", "Sarasa Mono TC",
+      "Cascadia Mono", "Cascadia Code", "JetBrains Mono", "Source Code Pro",
+      "Consolas", "Courier New"
+  };
+
+  /**
+   * List installed families satisfying {@code predicate}, with {@code prefs}
+   * (those that are installed and match) floated to the top in the given
+   * order, and the remaining matches sorted case-insensitively.
+   */
+  private static List<String> familiesMatching(java.util.function.Predicate<String> predicate,
+                                               String[] prefs) {
+    Set<String> available = availableFamilies();
+    java.util.List<String> matches = new java.util.ArrayList<>();
+    for (String f : available) {
+      if (predicate.test(f)) matches.add(f);
+    }
+    java.util.List<String> ordered = new java.util.ArrayList<>();
+    for (String p : prefs) {
+      if (matches.contains(p) && !ordered.contains(p)) ordered.add(p);
+    }
+    matches.sort(String.CASE_INSENSITIVE_ORDER);
+    for (String f : matches) {
+      if (!ordered.contains(f)) ordered.add(f);
+    }
+    return java.util.Collections.unmodifiableList(ordered);
+  }
+
+  private static Graphics2D scratchGraphics() {
+    BufferedImage img = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
+    return img.createGraphics();
+  }
+}

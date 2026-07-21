@@ -701,13 +701,22 @@ public class CompositeFontPanel extends TerminalPanel {
    */
   @Override
   protected void processMouseMotionEvent(MouseEvent e) {
-    if (e.getID() == MouseEvent.MOUSE_DRAGGED
-        && (e.getModifiersEx() & InputEvent.BUTTON1_DOWN_MASK) != 0) {
-      MouseEvent adjusted = snapDwcClick(e);
-      if (adjusted != null) {
+    if (e.getID() == MouseEvent.MOUSE_DRAGGED) {
+      // Suppress right-button drag entirely so JediTerm's mouseDragged
+      // listener never starts a text selection. A slight hand wobble
+      // during right-click-to-paste must not turn into a selection —
+      // the subsequent MOUSE_CLICKED still fires paste regardless.
+      if ((e.getModifiersEx() & InputEvent.BUTTON3_DOWN_MASK) != 0) {
         e.consume();
-        super.processMouseMotionEvent(adjusted);
         return;
+      }
+      if ((e.getModifiersEx() & InputEvent.BUTTON1_DOWN_MASK) != 0) {
+        MouseEvent adjusted = snapDwcClick(e);
+        if (adjusted != null) {
+          e.consume();
+          super.processMouseMotionEvent(adjusted);
+          return;
+        }
       }
     }
     super.processMouseMotionEvent(e);

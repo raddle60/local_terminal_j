@@ -23,6 +23,24 @@
     <exec.mainClass>local.term.App</exec.mainClass>
   </properties>
 
+  <!-- JediTerm (org.jetbrains.jediterm:*) is published on JetBrains' team
+       city Maven repository (https://packages.jetbrains.team), not Maven
+       Central. Declare the repo so Maven can resolve jediterm-core /
+       jediterm-ui directly. -->
+  <repositories>
+    <repository>
+      <id>jetbrains-intellij-dependencies</id>
+      <name>JetBrains IntelliJ Dependencies</name>
+      <url>https://packages.jetbrains.team/maven/p/ij/intellij-dependencies</url>
+      <releases>
+        <enabled>true</enabled>
+      </releases>
+      <snapshots>
+        <enabled>false</enabled>
+      </snapshots>
+    </repository>
+  </repositories>
+
   <dependencies>
     <dependency>
       <groupId>org.jetbrains.jediterm</groupId>

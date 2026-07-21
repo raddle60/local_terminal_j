@@ -93,6 +93,13 @@
       <artifactId>slf4j-simple</artifactId>
       <version>${slf4j.version}</version>
     </dependency>
+    <!-- Caffeine: 高性能缓存库,用于字体解析结果缓存。提供自动LRU淘汰、
+         并发优化、统计功能,比手写ConcurrentHashMap+手动清理更可靠。 -->
+    <dependency>
+      <groupId>com.github.ben-manes.caffeine</groupId>
+      <artifactId>caffeine</artifactId>
+      <version>3.1.8</version>
+    </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>

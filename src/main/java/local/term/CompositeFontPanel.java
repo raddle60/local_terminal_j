@@ -1,5 +1,7 @@
 package local.term;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.jediterm.terminal.TextStyle;
 import com.jediterm.terminal.model.StyleState;
 import com.jediterm.terminal.model.TerminalTextBuffer;
@@ -22,10 +24,7 @@ import java.awt.event.InputEvent;
 import java.awt.event.InputMethodEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * TerminalPanel that draws non-ASCII characters with a font-fallback chain
@@ -77,6 +76,80 @@ public class CompositeFontPanel extends TerminalPanel {
   // Size the fallback chain was built for. Tracked so applyFontSize knows
   // when the chain is stale (otherwise we'd rebuild on every tick).
   private int fallbackSize;
+
+  /**
+   * Cache for font resolution results. Maps (text-hash, style) to the resolved Font.
+   *
+   * <p>Terminal output has大量重复模式(提示符、命令、输出格式等),同一个文本run
+   * 在不同位置出现时,字体解析结果完全相同。缓存避免了每次paintComponent时重复执行
+   * canDisplayUpTo()探测(每次探测需要遍历run中所有字符的glyph表)。
+   *
+   * <p>使用Caffeine缓存库,提供:
+   * <ul>
+   *   <li>自动LRU淘汰:超过maximumSize时自动移除最久未使用的条目</li>
+   *   <li>高性能并发:比手写ConcurrentHashMap+手动清理更高效</li>
+   *   <li>统计功能:可通过cache.stats()获取命中率等指标</li>
+   * </ul>
+   *
+   * <p>缓存key是文本内容的hash+style组合,字体大小变化时通过{@link #clearFontCache()}清空。
+   */
+  private static final int MAX_CACHE_ENTRIES = 10000;
+  private final Cache<FontCacheKey, Font> fontResolutionCache = Caffeine.newBuilder()
+      .maximumSize(MAX_CACHE_ENTRIES)
+      .recordStats()  // 启用统计,可通过fontResolutionCache.stats()查看命中率
+      .build();
+
+  /**
+   * Cache key for font resolution: combines text content hash with TextStyle.
+   *
+   * <p>不可变对象,hash和equals基于文本内容的副本和style的bold/italic标志。
+   * 不包含style的全部属性(如前景色、背景色),因为字体选择只依赖bold/italic。
+   *
+   * <p>重要:text数组必须被复制,因为传入的char[]可能被JediTerm的缓冲区重用,
+   * 如果持有引用会导致:1)内存泄漏(大缓冲区被缓存key持有) 2)hash失效(缓冲区内容改变)
+   */
+  private static final class FontCacheKey {
+    private final int hash;
+    private final char[] textCopy;  // 文本内容的副本,保证不可变
+    private final boolean bold;
+    private final boolean italic;
+
+    FontCacheKey(char[] text, int start, int end, TextStyle style) {
+      // 复制文本内容到新的数组,避免持有外部缓冲区的引用
+      int len = end - start;
+      this.textCopy = new char[len];
+      System.arraycopy(text, start, textCopy, 0, len);
+      this.bold = style != null && style.hasOption(TextStyle.Option.BOLD);
+      this.italic = style != null && style.hasOption(TextStyle.Option.ITALIC);
+      // 计算hash:基于文本内容 + bold/italic标志
+      int h = 1;
+      for (char c : textCopy) {
+        h = 31 * h + c;
+      }
+      h = 31 * h + (bold ? 1 : 0);
+      h = 31 * h + (italic ? 2 : 0);
+      this.hash = h;
+    }
+
+    @Override
+    public int hashCode() {
+      return hash;
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+      if (this == obj) return true;
+      if (!(obj instanceof FontCacheKey other)) return false;
+      if (hash != other.hash) return false;
+      if (bold != other.bold || italic != other.italic) return false;
+      // 比较文本内容
+      if (textCopy.length != other.textCopy.length) return false;
+      for (int i = 0; i < textCopy.length; i++) {
+        if (textCopy[i] != other.textCopy[i]) return false;
+      }
+      return true;
+    }
+  }
 
   /**
    * Legacy constructor: single CJK fallback font. Retained for backward
@@ -164,6 +237,8 @@ public class CompositeFontPanel extends TerminalPanel {
       });
     }
     this.variants = fresh;
+    // 清空字体解析缓存:字体大小变化后,之前缓存的Font对象已经过时
+    clearFontCache();
     // Force a repaint so the new metrics + new fonts render on the next
     // paint cycle. Without this, the change is invisible until the user
     // scrolls or the cursor blinks (whichever comes first).
@@ -173,8 +248,37 @@ public class CompositeFontPanel extends TerminalPanel {
   @Override
   protected @NotNull Font getFontToDisplay(char[] text, int start, int end,
                                             @NotNull TextStyle style) {
-    return chooseFont(text, start, end, style, resolver, variants,
+    // 所有run都经过缓存:包括纯ASCII(主字体是应用配置的,需要缓存)
+    // 和非ASCII(需要fallback链解析,更需要缓存)
+    FontCacheKey key = new FontCacheKey(text, start, end, style);
+
+    // Caffeine缓存查找:缓存命中时直接返回,避免重复的字体解析
+    Font cached = fontResolutionCache.getIfPresent(key);
+    if (cached != null) {
+      return cached;
+    }
+
+    // 缓存未命中:执行完整的字体解析
+    // chooseFont()内部有runNeedsCjk()快速路径,纯ASCII会直接返回super.getFontToDisplay()
+    // 非ASCII会执行完整的fallback链探测
+    Font resolved = chooseFont(text, start, end, style, resolver, variants,
         () -> super.getFontToDisplay(text, start, end, style));
+
+    // 存入Caffeine缓存:自动LRU淘汰,超过maximumSize时自动移除最久未使用的条目
+    fontResolutionCache.put(key, resolved);
+
+    return resolved;
+  }
+
+  /**
+   * 清空字体解析缓存。在字体大小变化、fallback链重建时调用。
+   *
+   * <p>字体变化后,之前缓存的Font对象已经过时(字体大小不对),必须清空。
+   * Caffeine的invalidateAll()会移除所有条目并重置统计。
+   */
+  private void clearFontCache() {
+    fontResolutionCache.invalidateAll();
+    LOG.debug("Font cache cleared");
   }
 
   /**

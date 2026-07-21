@@ -8,18 +8,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build & run
 
-Prerequisites: JDK 17 on PATH, Maven 3.9+, and a JediTerm source checkout at the sibling path `..\jediterm` (JediTerm is consumed via `install-jediterm.bat`).
+Prerequisites: JDK 17 on PATH and Maven 3.9+. JediTerm 3.73 is pulled directly from JetBrains' TeamCity Maven repository (`packages.jetbrains.team/maven/p/ij/intellij-dependencies`, declared in `pom.xml`) — no local source checkout, no install script.
 
 | Task | Command |
 |---|---|
-| Install JediTerm to local Maven repo (one-time) | `scripts\install-jediterm.bat` |
 | Build (shaded jar + Windows app image via jpackage) | `mvn clean package` |
 | Build without jpackage (skip native installer) | `mvn clean package -Djpackage.skip=true` |
 | Run from shaded jar | `java -jar target\local-term-java-0.1.0-SNAPSHOT.jar` |
 | Run via Maven exec (good for IDE-like feedback) | `mvn exec:java` |
 | Run a single test class | `mvn test -Dtest=ClassName` |
 | Run a single test method | `mvn test -Dtest=ClassName#methodName` |
-| Re-sync bundled default shell SVGs | `scripts\convert-shell-icons.bat` (source: sibling `local_terminal` project) |
 
 Build quirk: `maven-shade-plugin` runs in the `package` phase, then `maven-antrun-plugin` runs `jlink` to produce a slim `target/custom-jre/` and stages the fat jar into `target/jpackage-input/`, then `jpackage-maven-plugin` wraps that into `target/dist/`. If you add a new dependency that needs reflective JDK access, append its module name to `jdk.modules.extra` in `pom.xml`. The `FontUtils` class reaches into `sun.font.CompositeFont`, so Maven Surefire and `mvn exec:java` both already pass `--add-opens java.desktop/sun.font=ALL-UNNAMED`.
 
@@ -95,7 +93,7 @@ Three top-level layers, each independently understandable:
 
 ## Debugging notes
 
-- "Package not found" for `org.jetbrains.jediterm:*` → re-run `scripts\install-jediterm.bat`.
+- "Package not found" for `org.jetbrains.jediterm:*` → Maven needs to reach `packages.jetbrains.team/maven/p/ij/intellij-dependencies`. Check your network/proxy, or that the `<repositories>` block in `pom.xml` wasn't removed.
 - "Pty4J native load failed" → ensure the 64-bit JDK matches the pty4j native DLL bundled in the jar.
 - `AWTError: Assistive Technology not found` at startup on Windows → `jdk.accessibility` is already in `jdk.modules.extra`; if you start a fresh slim JRE, keep it there (some Windows installs ship a stale `~/.accessibility.properties`).
 - Auto-script timeout leaves the tab open (intentional) — look for `ERROR ... AutoScript timed out` in the log; the session remains live for inspection.

@@ -5,7 +5,7 @@ A Windows desktop terminal manager built on JediTerm + pty4j + ConPTY.
 ![snapshot](local_terminal_snapshot.png)
 
 ## Prerequisites
-- JDK 17 (on PATH; JAVA_HOME will be auto-detected by the install script)
+- JDK 17 on PATH
 - Maven 3.9+
 
 ## Setup
@@ -58,18 +58,18 @@ The set of bundled defaults: bash, cmd, dash, fish, ksh, nushell,
 powershell, pwsh, sh, tcsh, xonsh, zsh — plus a generic `default.svg`
 for shells whose path doesn't match any of these.
 
-## Re-syncing the default shell icons
+## Adding or replacing a default shell icon
 
-The 12 default shell SVGs live in the sibling
-`local_terminal/src/renderer/assets/shell-icons/` directory. To
-re-sync them (e.g. after a sibling project change), run
-`scripts\convert-shell-icons.bat`. The script copies the SVGs into
-`src/main/resources/shell-icons/` — no SVG → PNG conversion step is
-needed, since the resolver renders the SVGs at the target size on
-demand. Re-runs are idempotent.
+The 12 default shell SVGs are committed as vector files in
+`src/main/resources/shell-icons/`. To add a new default icon or replace
+an existing one, drop the new SVG into that directory using one of the
+filenames matched by `ShellNameExtractor` (e.g. `bash.svg`, `cmd.svg`,
+`powershell.svg`) — or `default.svg` to set the catch-all fallback.
+There is no build step or conversion: `ShellIconResolver` rasterises the
+SVG at the L&F's folder-icon size on demand via Apache Batik.
 
 ## Troubleshooting
-- "Package not found" for `org.jetbrains.jediterm:*` → re-run `scripts\install-jediterm.bat`.
+- "Package not found" for `org.jetbrains.jediterm:*` → Maven needs to reach `packages.jetbrains.team/maven/p/ij/intellij-dependencies`. Check your network/proxy, or that the `<repositories>` block in `pom.xml` wasn't removed.
 - "Pty4J native load failed" → ensure 64-bit JDK matches the pty4j native DLL bundled in the jar.
 
 ## See also
@@ -89,8 +89,8 @@ These verify the optional auto-script feature on shell nodes.
    `hello from auto-script` is sent. The tab stays open.
 3. Edit the same shell and change the wait pattern to a string that will
    **never** appear (`never:`). Save. Double-click the shell again → after
-   ~10 seconds the tab closes itself. The log file
-   (`<user home>\.local-term-java\config.json` directory) shows an
-   `ERROR ... AutoScript timed out` line.
+   ~10 seconds an `ERROR ... AutoScript timed out` dialog is shown and the
+   **tab stays open** so you can inspect the shell output to see why the
+   wait pattern never matched. Close the tab manually when done.
 4. Restart the application → the saved auto-script survives (same timeout,
    same steps). Double-click to re-run.

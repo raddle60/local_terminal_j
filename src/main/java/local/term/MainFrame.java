@@ -18,6 +18,10 @@ import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.Image;
+import java.awt.KeyEventDispatcher;
+import java.awt.KeyboardFocusManager;
+import java.awt.event.InputEvent;
+import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.WindowAdapter;
@@ -65,6 +69,33 @@ public class MainFrame extends JFrame {
    *  width; the listener on JSplitPane keeps this in sync with the user's
    *  drag gestures while the tree is visible. */
   private int lastVisibleDividerLocation;
+  /** App-wide Ctrl+B dispatcher. A {@link JMenuItem} accelerator only fires
+   *  when the focused component lets the keystroke through, and JediTerm's
+   *  terminal panel consumes Ctrl+B (it's the readline "back-char" binding
+   *  and gets swallowed by the terminal's input map). A dispatcher
+   *  registered with {@link KeyboardFocusManager} sees the event BEFORE
+   *  any component dispatches it, so the tree-toggle works no matter
+   *  which child has focus. */
+  private final KeyEventDispatcher treeToggleDispatcher = e -> {
+    if (e.getID() != KeyEvent.KEY_PRESSED) return false;
+    if (e.getKeyCode() != KeyEvent.VK_B) return false;
+    // Ctrl only — leave Ctrl+Shift+B / Ctrl+Alt+B / etc. alone for the
+    // shell or future bindings.
+    int mods = e.getModifiersEx();
+    if ((mods & InputEvent.CTRL_DOWN_MASK) == 0) return false;
+    if ((mods & (InputEvent.SHIFT_DOWN_MASK | InputEvent.ALT_DOWN_MASK
+        | InputEvent.META_DOWN_MASK)) != 0) return false;
+    // Only when this frame (or one of its owned windows — settings dialog,
+    // future popups) has focus. Returning false here would let sibling
+    // top-level windows also trigger the toggle, which would be surprising.
+    java.awt.Window focused = KeyboardFocusManager
+        .getCurrentKeyboardFocusManager().getFocusedWindow();
+    if (focused == null) return false;
+    if (!SwingUtilities.isDescendingFrom(focused, this)) return false;
+    toggleTreePanel();
+    e.consume();
+    return true;
+  };
 
   public MainFrame() {
     super(BASE_TITLE);
@@ -145,6 +176,16 @@ public class MainFrame extends JFrame {
     buildMenuBar();
     layoutContent();
 
+    // Register the global Ctrl+B dispatcher. We do this AFTER layoutContent
+    // so any synchronous toggleTreePanel() call (via a re-entrant keystroke
+    // that fires during the EDT pass that created this frame) sees the
+    // JSplitPane already wired up. KeyboardFocusManager keeps the
+    // dispatcher until the JVM exits or it's explicitly removed; we
+    // remove it in windowClosing so closing the last window doesn't leave
+    // a stale reference behind if the same JVM hosts another frame later.
+    KeyboardFocusManager.getCurrentKeyboardFocusManager()
+        .addKeyEventDispatcher(treeToggleDispatcher);
+
     // Apply the saved divider location after the split has been laid out.
     // JSplitPane.setDividerLocation(int) interprets its argument as a
     // proportion (0.0–1.0) when the split isn't yet shown, so we wait
@@ -160,6 +201,8 @@ public class MainFrame extends JFrame {
 
     addWindowListener(new WindowAdapter() {
       @Override public void windowClosing(WindowEvent e) {
+        KeyboardFocusManager.getCurrentKeyboardFocusManager()
+            .removeKeyEventDispatcher(treeToggleDispatcher);
         onCloseRequested();
       }
     });

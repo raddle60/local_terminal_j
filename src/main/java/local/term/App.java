@@ -1,9 +1,12 @@
 package local.term;
 
 import com.formdev.flatlaf.FlatDarkLaf;
+import java.awt.Font;
 import javax.swing.JFrame;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
+import javax.swing.plaf.FontUIResource;
+import org.slf4j.LoggerFactory;
 
 /**
  * Entry point. Builds the MainFrame on the Event Dispatch Thread.
@@ -28,6 +31,7 @@ public class App {
       // FlatLaf sets the Dwm hint either way for the title bar.
       JFrame.setDefaultLookAndFeelDecorated(true);
       FlatDarkLaf.setup();
+      lockFonts();
     } catch (Exception ex) {
       // FlatDarkLaf doesn't throw, but keep a defensive fallback so the
       // app still launches.
@@ -40,5 +44,48 @@ public class App {
       MainFrame frame = new MainFrame();
       frame.setVisible(true);
     });
+  }
+
+  /**
+   * Lock Swing font defaults against post-setup re-scaling.
+   *
+   * <p>FlatLaf stores fonts as {@link FontUIResource} in UIManager defaults.
+   * Swing's {@code UIManager.getFont()} applies
+   * {@code scaleFont()} to every {@code FontUIResource} it reads, multiplying
+   * the point size by the current system scale factor. Normally this is
+   * idempotent (the stored value is the base size, and the scale factor is
+   * constant), but after a Windows screen-lock/unlock cycle the display
+   * subsystem can briefly report a transient scale factor. Swing's internal
+   * display-change handler then reads the {@code FontUIResource}, multiplies
+   * it by the transient factor, and writes the enlarged value BACK into
+   * UIManager. On the next display change the same font is scaled AGAIN on
+   * top of the already-enlarged size, and menu/button text grows visibly.
+   *
+   * <p>Terminal fonts are unaffected because JediTerm sets them as plain
+   * {@link Font} (via {@code DarkSettingsProvider}), not {@code FontUIResource},
+   * so they bypass {@code scaleFont()} entirely.
+   *
+   * <p>The fix: after L&F install, convert every {@code FontUIResource} in
+   * UIManager to a plain {@code Font} at the same size. Plain {@code Font}
+   * fails the {@code instanceof FontUIResource} check inside
+   * {@code scaleFont()}, so it is returned as-is — no further scaling,
+   * regardless of display change events or transient scale factor values.
+   */
+  private static void lockFonts() {
+    int converted = 0;
+    for (Object key : UIManager.getDefaults().keySet().toArray()) {
+      Object value = UIManager.getDefaults().get(key);
+      if (value instanceof FontUIResource fur) {
+        Font plain = new Font(fur.getFamily(), fur.getStyle(), fur.getSize());
+        UIManager.put(key, plain);
+        converted++;
+      }
+    }
+    // Debug log: confirms how many font entries were converted.
+    // If FlatLaf changes its defaults structure, a sudden drop in this
+    // count would flag that the conversion is no longer catching the
+    // right entries.
+    LoggerFactory.getLogger(App.class)
+        .debug("lockFonts: converted {} FontUIResource entries to Font", converted);
   }
 }

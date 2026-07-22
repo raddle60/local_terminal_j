@@ -25,6 +25,7 @@ import java.awt.event.InputMethodEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
 import java.util.*;
+import javax.swing.BoundedRangeModel;
 
 /**
  * TerminalPanel that draws non-ASCII characters with a font-fallback chain
@@ -78,25 +79,29 @@ public class CompositeFontPanel extends TerminalPanel {
   private int fallbackSize;
 
   /**
-   * Cache for font resolution results. Maps (text-hash, style) to the resolved Font.
+   * 全局字体解析缓存,所有CompositeFontPanel实例共享。
    *
    * <p>Terminal output has大量重复模式(提示符、命令、输出格式等),同一个文本run
-   * 在不同位置出现时,字体解析结果完全相同。缓存避免了每次paintComponent时重复执行
-   * canDisplayUpTo()探测(每次探测需要遍历run中所有字符的glyph表)。
+   * 在不同位置、不同tab中出现时,字体解析结果完全相同。全局缓存避免了:
+   * <ul>
+   *   <li>每个tab独立缓存的内存浪费</li>
+   *   <li>跨tab重复解析相同文本的CPU开销</li>
+   * </ul>
    *
    * <p>使用Caffeine缓存库,提供:
    * <ul>
    *   <li>自动LRU淘汰:超过maximumSize时自动移除最久未使用的条目</li>
-   *   <li>高性能并发:比手写ConcurrentHashMap+手动清理更高效</li>
+   *   <li>高性能并发:内部使用分段锁和优化算法,多线程安全</li>
    *   <li>统计功能:可通过cache.stats()获取命中率等指标</li>
    * </ul>
    *
    * <p>缓存key是文本内容的hash+style组合,字体大小变化时通过{@link #clearFontCache()}清空。
+   * 字体大小是全局配置(DarkSettingsProvider的静态字段),所以所有tab同步变化是合理的。
    */
   private static final int MAX_CACHE_ENTRIES = 10000;
-  private final Cache<FontCacheKey, Font> fontResolutionCache = Caffeine.newBuilder()
+  private static final Cache<FontCacheKey, Font> FONT_RESOLUTION_CACHE = Caffeine.newBuilder()
       .maximumSize(MAX_CACHE_ENTRIES)
-      .recordStats()  // 启用统计,可通过fontResolutionCache.stats()查看命中率
+      .recordStats()  // 启用统计,可通过FONT_RESOLUTION_CACHE.stats()查看命中率
       .build();
 
   /**
@@ -253,7 +258,8 @@ public class CompositeFontPanel extends TerminalPanel {
     FontCacheKey key = new FontCacheKey(text, start, end, style);
 
     // Caffeine缓存查找:缓存命中时直接返回,避免重复的字体解析
-    Font cached = fontResolutionCache.getIfPresent(key);
+    // 使用全局共享缓存FONT_RESOLUTION_CACHE,所有tab共享
+    Font cached = FONT_RESOLUTION_CACHE.getIfPresent(key);
     if (cached != null) {
       return cached;
     }
@@ -265,20 +271,22 @@ public class CompositeFontPanel extends TerminalPanel {
         () -> super.getFontToDisplay(text, start, end, style));
 
     // 存入Caffeine缓存:自动LRU淘汰,超过maximumSize时自动移除最久未使用的条目
-    fontResolutionCache.put(key, resolved);
+    FONT_RESOLUTION_CACHE.put(key, resolved);
 
     return resolved;
   }
 
   /**
-   * 清空字体解析缓存。在字体大小变化、fallback链重建时调用。
+   * 清空全局字体解析缓存。在字体大小变化、fallback链重建时调用。
    *
    * <p>字体变化后,之前缓存的Font对象已经过时(字体大小不对),必须清空。
    * Caffeine的invalidateAll()会移除所有条目并重置统计。
+   *
+   * <p>静态方法,因为缓存是全局共享的。
    */
-  private void clearFontCache() {
-    fontResolutionCache.invalidateAll();
-    LOG.debug("Font cache cleared");
+  private static void clearFontCache() {
+    FONT_RESOLUTION_CACHE.invalidateAll();
+    LOG.debug("Font cache cleared (shared across all tabs)");
   }
 
   /**
@@ -743,6 +751,59 @@ public class CompositeFontPanel extends TerminalPanel {
     if (e.getID() == InputMethodEvent.INPUT_METHOD_TEXT_CHANGED) {
       repaint();
     }
+  }
+
+  // ---- scroll to cursor after paste ----
+
+  /**
+   * Wrap JediTerm's action list so the paste action scrolls the view to
+   * the cursor (bottom) after executing. Without this, a user who scrolled
+   * up to copy text then pastes (via Ctrl+V, Ctrl+Shift+V, or right-click)
+   * can't see the pasted content — the view stays pinned to the history
+   * scroll position.
+   *
+   * <p>All three paste entry points funnel through the {@link TerminalAction}
+   * with mnemonic {@code VK_P} in the action list:
+   * <ul>
+   *   <li>Keyboard shortcuts (Ctrl+V / Ctrl+Shift+V) — dispatched by
+   *       JediTerm's {@code TerminalKeyHandler} via
+   *       {@code TerminalAction.processEvent(this, e)}, which iterates
+   *       {@code getActions()} and matches key strokes.</li>
+   *   <li>Right-click — {@link #pasteViaTerminalAction()} finds the same
+   *       action by its {@code VK_P} mnemonic and fires it directly.</li>
+   * </ul>
+   * So a single wrap at the action-list level covers every paste path.
+   *
+   * <p>Scroll-to-bottom uses {@code getVerticalScrollModel().setValue(0)},
+   * matching JediTerm's own {@code scrollToBottom()} semantics (private in
+   * the superclass — the public {@code getVerticalScrollModel()} returns
+   * the same {@link BoundedRangeModel}). After the paste writes to the
+   * PTY, the PTY echo comes back through the buffer and
+   * {@code updateScrolling()} keeps the view at the bottom because the
+   * scroll model is at value 0 (the "pinned to bottom" position).
+   */
+  @Override
+  public @NotNull List<TerminalAction> getActions() {
+    List<TerminalAction> original = super.getActions();
+    List<TerminalAction> wrapped = new ArrayList<>(original.size());
+    for (TerminalAction action : original) {
+      if (action.getMnemonicKeyCode() != null
+          && action.getMnemonicKeyCode() == KeyEvent.VK_P) {
+        wrapped.add(new TerminalAction(action.getPresentation(), e -> {
+          boolean result = action.actionPerformed(e);
+          // Scroll to bottom so the pasted content (and the cursor
+          // where it lands) is visible. Matches JediTerm's
+          // scrollToBottom() semantics via the public scroll model.
+          getVerticalScrollModel().setValue(0);
+          return result;
+        })
+            .withMnemonicKey(KeyEvent.VK_P)
+            .withEnabledSupplier(() -> action.isEnabled(null)));
+      } else {
+        wrapped.add(action);
+      }
+    }
+    return wrapped;
   }
 
   // ---- right-click paste ----

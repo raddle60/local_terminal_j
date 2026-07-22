@@ -169,7 +169,10 @@ public class TerminalPanel extends JPanel {
       return;
     }
     TerminalSession session = ((TerminalLauncher.LaunchResult.Success) result).session();
-    UUID key = tag.id();
+    // Use a unique session ID instead of tag.id() so that opening two tabs
+    // from the same tree tag doesn't cause the second session to overwrite
+    // the first in the map — each tab must be tracked independently.
+    UUID key = UUID.randomUUID();
     sessions.put(key, session);
     int index = tabs.getTabCount();
     tabs.addTab(tag.name(), session.getWidget());

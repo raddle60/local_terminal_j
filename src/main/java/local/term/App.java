@@ -70,13 +70,23 @@ public class App {
    * fails the {@code instanceof FontUIResource} check inside
    * {@code scaleFont()}, so it is returned as-is — no further scaling,
    * regardless of display change events or transient scale factor values.
+   *
+   * <p>We use {@link Font#deriveFont(float)} rather than
+   * {@code new Font(family, style, size)} so the derived {@code Font}
+   * reuses the original {@code Font2D} handle. A fresh
+   * {@code new Font(family, ...)} constructs a new {@code Font2D}, which
+   * rebuilds the composite-font fallback chain — and characters outside
+   * the primary font's glyph set (e.g. {@code ≪} U+226A, which needs
+   * Symbol fallback) would render as a box.
    */
   private static void lockFonts() {
     int converted = 0;
     for (Object key : UIManager.getDefaults().keySet().toArray()) {
       Object value = UIManager.getDefaults().get(key);
       if (value instanceof FontUIResource fur) {
-        Font plain = new Font(fur.getFamily(), fur.getStyle(), fur.getSize());
+        // deriveFont preserves the original Font2D (composite fallbacks
+        // included); only the point size is re-bound to the same value.
+        Font plain = fur.deriveFont(fur.getSize2D());
         UIManager.put(key, plain);
         converted++;
       }

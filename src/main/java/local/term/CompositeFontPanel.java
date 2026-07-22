@@ -587,44 +587,53 @@ public class CompositeFontPanel extends TerminalPanel {
         TextStyle.EMPTY)).getHeight();
     int spaceBetweenLines = Math.max(0, ((charHeight - fontMetricsHeight) / 2) * 2);
 
-    char[] oneChar = new char[1];
-    for (int y = 0; y < rows; y++) {
-      int bufferY = y + scrollOrigin;
-      // getLine() is declared non-null in Kotlin but the underlying
-      // screenLinesStorage can hand back a null slot during the brief
-      // window when the terminal is resizing / reorganising scrollback.
-      // Snapshot the row once, skip the whole row if null, and read char
-      // + style from the same line so the two reads can't disagree even
-      // if a concurrent write swaps the row out between lookups.
-      TerminalLine line;
-      try {
-        line = buf.getLine(bufferY);
-      } catch (IndexOutOfBoundsException ignored) {
-        // Buffer shrank between getHeight() and getLine(); skip this row.
-        continue;
+    // Acquire the buffer lock to prevent ConcurrentModificationException
+    // when the PTY writer thread modifies TerminalLine's internal ArrayList
+    // while we're iterating over it. This matches JediTerm's own locking
+    // pattern in TerminalPanel.paintComponent.
+    buf.lock();
+    try {
+      char[] oneChar = new char[1];
+      for (int y = 0; y < rows; y++) {
+        int bufferY = y + scrollOrigin;
+        // getLine() is declared non-null in Kotlin but the underlying
+        // screenLinesStorage can hand back a null slot during the brief
+        // window when the terminal is resizing / reorganising scrollback.
+        // Snapshot the row once, skip the whole row if null, and read char
+        // + style from the same line so the two reads can't disagree even
+        // if a concurrent write swaps the row out between lookups.
+        TerminalLine line;
+        try {
+          line = buf.getLine(bufferY);
+        } catch (IndexOutOfBoundsException ignored) {
+          // Buffer shrank between getHeight() and getLine(); skip this row.
+          continue;
+        }
+        if (line == null) {
+          continue;
+        }
+        for (int x = 0; x < cols; x++) {
+          char ch = line.charAt(x);
+          if (ch == CharUtils.DWC) continue;
+          if (!matches.test(ch)) continue;
+          oneChar[0] = ch;
+          TextStyle style = line.getStyleAt(x);
+          TextStyle effective = style != null ? style : TextStyle.EMPTY;
+          Font font = getFontToDisplay(oneChar, 0, 1, effective);
+          gfx.setFont(font);
+          gfx.setColor(resolveForeground(effective));
+          int descent = gfx.getFontMetrics(font).getDescent();
+          int xCoord = x * charWidth + insetX;
+          int baseLine = (y + 1) * charHeight - spaceBetweenLines / 2 - descent;
+          gfx.drawChars(oneChar, 0, 1, xCoord, baseLine);
+        }
       }
-      if (line == null) {
-        continue;
-      }
-      for (int x = 0; x < cols; x++) {
-        char ch = line.charAt(x);
-        if (ch == CharUtils.DWC) continue;
-        if (!matches.test(ch)) continue;
-        oneChar[0] = ch;
-        TextStyle style = line.getStyleAt(x);
-        TextStyle effective = style != null ? style : TextStyle.EMPTY;
-        Font font = getFontToDisplay(oneChar, 0, 1, effective);
-        gfx.setFont(font);
-        gfx.setColor(resolveForeground(effective));
-        int descent = gfx.getFontMetrics(font).getDescent();
-        int xCoord = x * charWidth + insetX;
-        int baseLine = (y + 1) * charHeight - spaceBetweenLines / 2 - descent;
-        gfx.drawChars(oneChar, 0, 1, xCoord, baseLine);
-      }
+      // Avoid leaving the gfx with the last cell's font / color set —
+      // harmless but tidier to leave it as super left it.
+      gfx.setFont(null);
+    } finally {
+      buf.unlock();
     }
-    // Avoid leaving the gfx with the last cell's font / color set —
-    // harmless but tidier to leave it as super left it.
-    gfx.setFont(null);
   }
 
   /**

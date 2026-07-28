@@ -124,7 +124,10 @@ public class ShellEditorDialog extends JDialog {
     errorLabel.setForeground(java.awt.Color.RED);
     form.add(errorLabel, c);
 
-    JButton ok = new JButton(mode == Mode.EDIT ? "Save" : (mode == Mode.DUPLICATE ? "Duplicate" : "Add"));
+    // DUPLICATE clones an existing shell under the same parent with a fresh
+    // id — semantically an Add (the user is creating a new tree entry), so
+    // the confirm button reads "Add" to match. Only EDIT keeps "Save".
+    JButton ok = new JButton(mode == Mode.EDIT ? "Save" : "Add");
     JButton cancel = new JButton("Cancel");
     ok.addActionListener(e -> onOk());
     cancel.addActionListener(e -> { result = null; dispose(); });

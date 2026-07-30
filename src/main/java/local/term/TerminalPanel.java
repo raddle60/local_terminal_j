@@ -97,8 +97,23 @@ public class TerminalPanel extends JPanel {
     // trail the L&F normally provides), keyboard tab navigation, and any
     // future programmatic selection path. Without this the user had to
     // click the terminal area before keystrokes registered.
+    //
+    // The same listener also repaints every header's selected-state
+    // background. addTab fires this listener BEFORE setTabComponentAt
+    // runs (so the brand-new header isn't reachable via
+    // getTabComponentAt yet), and a redundant setSelectedIndex call
+    // doesn't fire it again — hence the explicit header.setSelected(true)
+    // in openSession after setTabComponentAt. Updating all headers here
+    // covers every other selection change (clicks, Ctrl+Tab, removal of
+    // a tab that was to the left of the active one).
     tabs.addChangeListener(e -> {
       int idx = tabs.getSelectedIndex();
+      for (int i = 0; i < tabs.getTabCount(); i++) {
+        java.awt.Component c = tabs.getTabComponentAt(i);
+        if (c instanceof CloseableTabHeader h) {
+          h.setSelected(i == idx);
+        }
+      }
       if (idx < 0) return;             // last tab just closed
       java.awt.Component selected = tabs.getComponentAt(idx);
       if (selected == null) return;
@@ -200,6 +215,14 @@ public class TerminalPanel extends JPanel {
         },
         () -> session.close());
     tabs.setTabComponentAt(index, header);
+    // The change listener fires from addTab() — BEFORE setTabComponentAt
+    // runs, so getTabComponentAt(newIndex) returns null at that point and
+    // the listener can't colour this header. A subsequent setSelectedIndex
+    // is a no-op (index already matches) and doesn't refire the listener,
+    // so seed the initial selected state here. All later selection
+    // changes (clicks, keyboard nav, tab removal) are handled by the
+    // listener itself.
+    header.setSelected(true);
     // Tooltip recovers a truncated title on hover and also exposes
     // the close button for users on touch-friendly L&Fs that hide the ×.
     tabs.setToolTipTextAt(index, tag.name());
@@ -334,13 +357,34 @@ public class TerminalPanel extends JPanel {
 
   /**
    * Tab header: optional shell icon + name label + close button, with a
-   * 2 px accent strip at the top edge while the owning session is in
-   * its output-highlight window. Icon-then-title matches the tree
+   * 1 px orange accent strip across the top while the owning session
+   * is in its output-highlight window. Icon-then-title matches the tree
    * renderer and the IDE/editor tab convention; tooltip on the whole
    * header surfaces a truncated title on hover.
+   *
+   * <p>The active tab is painted with the terminal content background
+   * colour so it visually merges with the area below — the focused
+   * surface is the surface you're typing into. Unfocused tabs stay
+   * transparent (opaque=false) so FlatLaf's original tab-strip colour
+   * shows through and they look exactly as the L&F author styled them.
+   * The contrast between focused (terminal-dark) and unfocused
+   * (FlatLaf-strip) gives an unmistakable "this tab is the live one"
+   * cue without painting anything on top of the L&F surface.
    */
   private static class CloseableTabHeader extends JPanel {
+    /**
+     * Active-tab background. Matches the terminal content background
+     * (#1E1E1E, from {@code DarkSettingsProvider.DEFAULT_BG}) so the
+     * selected tab visually flows into the area below — a "this is
+     * the surface you're typing into" effect. The unfocused tabs
+     * remain on FlatLaf's tab-strip colour, which is a touch lighter
+     * than this, so the focused tab reads as the lower-valued /
+     * "deeper" rectangle rather than a brighter card.
+     */
+    private static final Color SELECTED_BG = new Color(0x1E, 0x1E, 0x1E);
+
     private volatile boolean highlighted;
+    private volatile boolean selected;
 
     CloseableTabHeader(Icon icon, String title, Runnable onSelect,
         Runnable onClose) {
@@ -355,7 +399,14 @@ public class TerminalPanel extends JPanel {
       // is the empty middle of the header, not extra padding after the
       // button.
       super(new BorderLayout());
-      setOpaque(false);
+      // New tabs are selected the moment they appear (TerminalPanel
+      // calls setSelected(true) right after setTabComponentAt), so
+      // seed the selected look here: opaque so JPanel.paintComponent
+      // fills the rect with SELECTED_BG, bg so it knows what to fill.
+      // setSelected(false) later flips both back so FlatLaf's
+      // tab-strip colour shows through unchanged.
+      setOpaque(true);
+      setBackground(SELECTED_BG);
       // ShellIconResolver returns a zero-width ImageIcon (never null) when
       // even default.svg is missing, so we explicitly check the dimensions
       // and fall back to a label-only header. Keeps tab heights uniform
@@ -475,8 +526,46 @@ public class TerminalPanel extends JPanel {
     boolean isHighlighted() { return highlighted; }
 
     /**
-     * Draw the 2 px activity accent strip AFTER children so it sits
-     * on top of the icon / label / close button.  Overriding
+     * Switch this header between the focused and unfocused tab style.
+     * Called by {@link TerminalPanel}'s change listener whenever the
+     * {@link JTabbedPane}'s selected index changes (including the
+     * initial selection right after a new tab is added).
+     *
+     * <p>Focused: opaque + SELECTED_BG so the tab blends with the
+     * terminal content below. Unfocused: opaque=false so FlatLaf's
+     * original tab-strip colour shows through unchanged — the tab
+     * visually "joins" the inactive row above.
+     */
+    void setSelected(boolean s) {
+      if (this.selected == s) return;
+      this.selected = s;
+      if (s) {
+        // Restore the filled, opaque background. setBackground is
+        // idempotent so calling it on the same value is fine — it just
+        // re-asserts the colour in case anything cleared it.
+        setOpaque(true);
+        setBackground(SELECTED_BG);
+      } else {
+        // Drop both flags so JPanel.paintComponent doesn't fill
+        // anything: the L&F-painted tab strip behind the header stays
+        // visible. Nulling the background is belt-and-braces against
+        // any code that reads it directly; it's never consulted when
+        // opaque=false.
+        setOpaque(false);
+        setBackground(null);
+      }
+      // Explicit repaint so the swap is visible even when no other
+      // event would trigger one (e.g. the tab strip is off-screen
+      // behind a modal dialog or no focus change happened on the EDT
+      // for this particular header).
+      repaint();
+    }
+
+    boolean isSelected() { return selected; }
+
+    /**
+     * Draw the activity accent strip AFTER children so it sits on top
+     * of the icon / label / close button. Overriding
      * {@code paintChildren} instead of {@code paint} avoids confusing
      * FlatLaf's mouse-event dispatch for custom tab components — the
      * overlay must not change how the UI delegate routes clicks to
@@ -495,7 +584,15 @@ public class TerminalPanel extends JPanel {
         // themes. 1 px so it stays a thin accent line and doesn't
         // crowd the tab content.
         g2.setColor(new Color(0xFF, 0x6D, 0x00));
-        g2.fillRect(0, 0, getWidth(), 1);
+        // Width is intentionally one pixel short of the header's
+        // right edge (getWidth() - 1 instead of getWidth()). The seam
+        // pixel at x = getWidth() - 1 lives on the boundary between
+        // this header and the JTabbedPane's own tab rendering, and
+        // neither side reliably repaints it once the strip clears —
+        // leaving a 1-pixel orange speck in the top-right corner of
+        // every unhighlighted tab. Stopping the strip 1 px short
+        // avoids that overlap zone entirely.
+        g2.fillRect(0, 0, getWidth() - 1, 1);
       } finally {
         g2.dispose();
       }

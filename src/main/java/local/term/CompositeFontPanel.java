@@ -427,6 +427,7 @@ public class CompositeFontPanel extends TerminalPanel {
     gfx.setRenderingHints(buildAntialiasingHints());
     super.paintComponent(g);
     repaintEmojiChars(gfx);
+    repaintAmbiguousWideChars(gfx);
 
     gfx.setRenderingHints(buildBoxDrawingHints());
     repaintBoxDrawingChars(gfx);
@@ -528,6 +529,53 @@ public class CompositeFontPanel extends TerminalPanel {
   }
 
   /**
+   * Returns {@code true} when {@code codePoint} is in one of the
+   * East-Asian-Ambiguous / Misc-Symbol ranges whose glyph the CJK
+   * fallback fonts (Microsoft YaHei Mono, Sarasa Mono SC) render
+   * at ~2 cells wide, but JediTerm's width detection still treats
+   * as a single cell — so the right half of the glyph bleeds into
+   * the next cell and gets clipped by the opaque background fill
+   * of whatever follows. Without a re-stamp the user sees the
+   * character as "half a character".
+   *
+   * <p>Re-stamping under the live LCD HRGB hints (called from
+   * {@link #paintComponent} right after {@code super.paintComponent})
+   * paints the full glyph on top, recovering the clipped right
+   * half. Same trick {@link #repaintEmojiChars} uses for
+   * color-emoji bitmaps.
+   *
+   * <p>These are the ranges the existing {@link #isEmoji} and
+   * {@link #isBoxDrawing} predicates miss — a couple of them sit
+   * in the geometric-shapes / dingbats gaps, others are entirely
+   * outside those windows:
+   * <ul>
+   *   <li>0x2190–0x22FF — Arrows + Mathematical Operators
+   *       (← → ↑ ↓ ∑ ∏ √ ∞)</li>
+   *   <li>0x2460–0x24FF — Enclosed Alphanumerics
+   *       (① ② ③ ⑴ ⒈ Ⓐ — the originally-reported case)</li>
+   *   <li>0x2580–0x259F — Block Elements
+   *       (▀ ▄ █ ▌ ▐ ░ ▒ ▓)</li>
+   *   <li>0x27C0–0x2BFF — Misc Math Symbols / Arrows / Sym / Pict
+   *       (⬛ ⬜ ⭕ ⬆ ⬇ ⬅ ⬡ ⬢)</li>
+   * </ul>
+   *
+   * <p>Parameter is {@code int} (not {@code char}) so the predicate
+   * plugs straight into {@link java.util.function.IntPredicate} as a
+   * method reference from {@link #repaintByPredicate}.
+   */
+  static boolean isAmbiguousWide(int codePoint) {
+    // Arrows + Mathematical Operators ← → ↑ ↓ ∑ ∏ √ ∞
+    if (codePoint >= 0x2190 && codePoint <= 0x22FF) return true;
+    // Enclosed Alphanumerics ① ② ③ ⑴ ⒈ Ⓐ (the originally-reported case)
+    if (codePoint >= 0x2460 && codePoint <= 0x24FF) return true;
+    // Block Elements ▀ ▄ █ ▌ ▐ ░ ▒ ▓
+    if (codePoint >= 0x2580 && codePoint <= 0x259F) return true;
+    // Misc Math / Arrows / Sym / Pict ⬛ ⬜ ⭕ ⬆ ⬇ ⬅ ⬡ ⬢
+    if (codePoint >= 0x27C0 && codePoint <= 0x2BFF) return true;
+    return false;
+  }
+
+  /**
    * Walk the visible screen cells and re-stamp any cell whose character
    * matches {@link #isEmoji}. Must be called after
    * {@code super.paintComponent} so the LCD-rendered content is in
@@ -557,6 +605,31 @@ public class CompositeFontPanel extends TerminalPanel {
    */
   private void repaintBoxDrawingChars(Graphics2D gfx) {
     repaintByPredicate(gfx, CompositeFontPanel::isBoxDrawing);
+  }
+
+  /**
+   * Walk the visible screen cells and re-stamp any cell whose character
+   * matches {@link #isAmbiguousWide}. Runs under the active LCD HRGB
+   * hint map (the caller in {@link #paintComponent} switches to
+   * box-drawing hints only AFTER this returns), so the re-stamped
+   * glyphs go through the same crisp-rendering path as the rest of
+   * the text.
+   *
+   * <p>Why a separate pass: the CJK fallback fonts (Microsoft YaHei
+   * Mono / Sarasa Mono SC) render ① ② ③ ← → █ etc. at ~2 cells wide,
+   * but JediTerm's width detection treats them as 1 cell. The next
+   * cell's opaque background fill consequently covers the right half
+   * of the glyph. Re-stamping at the same coords (no clipping) paints
+   * the full glyph on top so the clipped right half becomes visible.
+   *
+   * <p>Predicates are mutually exclusive with {@link #repaintEmojiChars}
+   * and {@link #repaintBoxDrawingChars} by Unicode-block construction,
+   * so the three passes can run in any order — calls run in the order
+   * emoji → ambiguous-wide → box-drawing so the box-drawing treatment
+   * wins on the rare overlap (none today, but defensive).
+   */
+  private void repaintAmbiguousWideChars(Graphics2D gfx) {
+    repaintByPredicate(gfx, CompositeFontPanel::isAmbiguousWide);
   }
 
   /**

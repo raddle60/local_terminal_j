@@ -413,6 +413,125 @@ class CompositeFontPanelTest {
     assertFalse(CompositeFontPanel.isBoxDrawing('◀')); // U+25C0 (geometric shape, below range)
   }
 
+  // ---- isAmbiguousWide: post-pass filter for ① ② ③ ← → █ ⬛ etc. ----
+  //
+  // The originally-reported bug: circled digits and arrows render at
+  // ~2 cells wide in the CJK fallback font, but JediTerm's width
+  // detection treats them as 1 cell, so the right half gets clipped
+  // by the next cell's opaque background. This predicate must catch
+  // those so the post-pass re-stamps them on top of the fill.
+
+  @Test
+  void isAmbiguousWide_recognizesOriginallyReportedCircledDigits() {
+    // The exact case the user reported: ① ② ③ ⑩ ⑳
+    assertTrue(CompositeFontPanel.isAmbiguousWide('①')); // U+2460
+    assertTrue(CompositeFontPanel.isAmbiguousWide('②')); // U+2461
+    assertTrue(CompositeFontPanel.isAmbiguousWide('③')); // U+2462
+    assertTrue(CompositeFontPanel.isAmbiguousWide('⑩')); // U+2469
+    assertTrue(CompositeFontPanel.isAmbiguousWide('⑳')); // U+2473
+    // Letter variants too: Ⓐ ⓐ ⒈ ⑴ — same block, same issue.
+    assertTrue(CompositeFontPanel.isAmbiguousWide('Ⓐ')); // U+24B6
+    assertTrue(CompositeFontPanel.isAmbiguousWide('ⓐ')); // U+24D0
+    assertTrue(CompositeFontPanel.isAmbiguousWide('⒈')); // U+2488
+    assertTrue(CompositeFontPanel.isAmbiguousWide('⑴')); // U+2474
+  }
+
+  @Test
+  void isAmbiguousWide_recognizesArrowsAndMathOperators() {
+    // ← → ↑ ↓ ∑ ∏ √ ∞ — all in Arrows (0x2190–0x21FF) or
+    // Mathematical Operators (0x2200–0x22FF) blocks.
+    assertTrue(CompositeFontPanel.isAmbiguousWide('←')); // U+2190
+    assertTrue(CompositeFontPanel.isAmbiguousWide('→')); // U+2192
+    assertTrue(CompositeFontPanel.isAmbiguousWide('↑')); // U+2191
+    assertTrue(CompositeFontPanel.isAmbiguousWide('↓')); // U+2193
+    assertTrue(CompositeFontPanel.isAmbiguousWide('∑')); // U+2211
+    assertTrue(CompositeFontPanel.isAmbiguousWide('√')); // U+221A
+    assertTrue(CompositeFontPanel.isAmbiguousWide('∞')); // U+221E
+  }
+
+  @Test
+  void isAmbiguousWide_recognizesBlockElements() {
+    // ▀ ▄ █ ▌ ▐ ░ ▒ ▓ — Block Elements which the CJK fallback also
+    // renders narrower than the glyph itself.
+    assertTrue(CompositeFontPanel.isAmbiguousWide('▀')); // U+2580
+    assertTrue(CompositeFontPanel.isAmbiguousWide('▄')); // U+2584
+    assertTrue(CompositeFontPanel.isAmbiguousWide('█')); // U+2588
+    assertTrue(CompositeFontPanel.isAmbiguousWide('▌')); // U+258C
+    assertTrue(CompositeFontPanel.isAmbiguousWide('▐')); // U+2590
+    assertTrue(CompositeFontPanel.isAmbiguousWide('▓')); // U+2593
+  }
+
+  @Test
+  void isAmbiguousWide_recognizesSupplementalSymbols() {
+    // ⬛ ⬜ ⭕ ⬆ ⬇ ⬅ ⬡ ⬢ — Misc Symbols / Arrows / Math in the
+    // 0x27C0–0x2BFF range. Some live in the BMP but the test
+    // pattern uses int literals to be safe.
+    assertTrue(CompositeFontPanel.isAmbiguousWide(0x2B1B)); // ⬛
+    assertTrue(CompositeFontPanel.isAmbiguousWide(0x2B1C)); // ⬜
+    assertTrue(CompositeFontPanel.isAmbiguousWide(0x2B55)); // ⭕
+    assertTrue(CompositeFontPanel.isAmbiguousWide(0x2B06)); // ⬆
+    assertTrue(CompositeFontPanel.isAmbiguousWide(0x2B07)); // ⬇
+    assertTrue(CompositeFontPanel.isAmbiguousWide(0x2B05)); // ⬅
+    assertTrue(CompositeFontPanel.isAmbiguousWide(0x2B21)); // ⬡
+    assertTrue(CompositeFontPanel.isAmbiguousWide(0x2B22)); // ⬢
+  }
+
+  @Test
+  void isAmbiguousWide_doesNotOverlapBoxDrawing() {
+    // Mutual exclusion invariant: a codepoint cannot be BOTH
+    // ambiguous-wide and box-drawing, or the two post-passes will
+    // fight for the same cell. Box-drawing wins (it runs last in
+    // paintComponent) but the wrong pass is still wrong.
+    for (char c = '─'; c <= '╿'; c++) {
+      assertFalse(CompositeFontPanel.isAmbiguousWide(c),
+          "Box-drawing char U+" + String.format("%04X", (int) c)
+              + " must not be classified as ambiguous-wide");
+    }
+  }
+
+  @Test
+  void isAmbiguousWide_doesNotOverlapEmoji() {
+    // Mutual exclusion with isEmoji: the emoji pass uses AA OFF
+    // hints (emoji-font bitmap blit), the ambiguous-wide pass uses
+    // LCD HRGB (text glyph). Routing an emoji here would re-stamp
+    // it without the bitmap blit and re-introduce the colored fringe.
+    // Sample one emoji from each block isEmoji covers.
+    assertFalse(CompositeFontPanel.isAmbiguousWide('☀')); // U+2600 Misc Symbols
+    assertFalse(CompositeFontPanel.isAmbiguousWide('✂')); // U+2702 Dingbats
+    assertFalse(CompositeFontPanel.isAmbiguousWide(0x1F680)); // 🚀
+    assertFalse(CompositeFontPanel.isAmbiguousWide(0x1F60A)); // 😊
+  }
+
+  @Test
+  void isAmbiguousWide_rejectsAsciiAndCjk() {
+    // ASCII: trivially rejected — the post-pass must not re-stamp
+    // every letter.
+    assertFalse(CompositeFontPanel.isAmbiguousWide('A'));
+    assertFalse(CompositeFontPanel.isAmbiguousWide(' '));
+    assertFalse(CompositeFontPanel.isAmbiguousWide('7'));
+    // CJK: lives in the CJK font, which is already metric-matched
+    // to the cell width — the post-pass would just re-stamp what
+    // was already drawn correctly.
+    assertFalse(CompositeFontPanel.isAmbiguousWide('中'));
+    assertFalse(CompositeFontPanel.isAmbiguousWide('あ'));
+  }
+
+  @Test
+  void isAmbiguousWide_rejectsRangesOutsideTheFourBlocks() {
+    // Just-inside-Range and just-outside-Range sanity checks.
+    // The four covered blocks are 0x2190–0x22FF, 0x2460–0x24FF,
+    // 0x2580–0x259F, 0x27C0–0x2BFF. Characters in the gaps between
+    // them are NOT covered (and should not be — adding them would
+    // bring back false positives).
+    assertFalse(CompositeFontPanel.isAmbiguousWide(0x218F)); // last char BEFORE Arrows (Roman Numeral)
+    assertFalse(CompositeFontPanel.isAmbiguousWide(0x2300)); // first char AFTER Math (Misc Technical — isEmoji)
+    assertFalse(CompositeFontPanel.isAmbiguousWide(0x245F)); // last char BEFORE Enclosed Alphanumerics
+    assertFalse(CompositeFontPanel.isAmbiguousWide(0x2500)); // box-drawing range, not covered here
+    assertFalse(CompositeFontPanel.isAmbiguousWide(0x25A0)); // first char AFTER Block Elements (Geometric Shapes — isEmoji)
+    assertFalse(CompositeFontPanel.isAmbiguousWide(0x27BF)); // last char BEFORE 0x27C0 (Dingbats — isEmoji)
+    assertFalse(CompositeFontPanel.isAmbiguousWide(0x2C00)); // first char AFTER the 0x27C0–0x2BFF block
+  }
+
   // ---- buildEmojiHints: the post-pass for color-emoji cells ----
   //
   // Guards the anti-occlusion property: AA OFF + integer metrics so the

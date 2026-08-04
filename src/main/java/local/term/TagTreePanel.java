@@ -11,6 +11,7 @@ import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JPopupMenu;
 import javax.swing.JTree;
+import javax.swing.SwingUtilities;
 import javax.swing.event.TreeExpansionEvent;
 import javax.swing.event.TreeExpansionListener;
 import javax.swing.event.TreeModelEvent;
@@ -435,7 +436,7 @@ public class TagTreePanel extends JPanel {
   }
 
   private void deleteNode(TagNode tag) {
-    int confirm = JOptionPane.showConfirmDialog(this,
+    int confirm = JOptionPane.showConfirmDialog(SwingUtilities.getWindowAncestor(this),
         "Delete '" + tag.name() + "'?", "Confirm delete",
         JOptionPane.YES_NO_OPTION);
     if (confirm != JOptionPane.YES_OPTION) return;
@@ -486,7 +487,8 @@ public class TagTreePanel extends JPanel {
       // truth — `newRoot` was an optimisation for the no-listener case.
       store.save((TagNode.Folder) model.rootTag());
     } catch (IOException e) {
-      JOptionPane.showMessageDialog(this, "Could not save config: " + e.getMessage(),
+      JOptionPane.showMessageDialog(SwingUtilities.getWindowAncestor(this),
+          "Could not save config: " + e.getMessage(),
           "Save error", JOptionPane.ERROR_MESSAGE);
       LOG.error("Save failed", e);
     }
@@ -601,7 +603,8 @@ public class TagTreePanel extends JPanel {
     try {
       store.save((TagNode.Folder) model.rootTag());
     } catch (IOException ex) {
-      JOptionPane.showMessageDialog(this, "Could not save config: " + ex.getMessage(),
+      JOptionPane.showMessageDialog(SwingUtilities.getWindowAncestor(this),
+          "Could not save config: " + ex.getMessage(),
           "Save error", JOptionPane.ERROR_MESSAGE);
       LOG.error("Save failed", ex);
     }

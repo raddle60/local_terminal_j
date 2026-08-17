@@ -7,10 +7,13 @@ import java.awt.Font;
 import java.awt.FontMetrics;
 import java.awt.Graphics2D;
 import java.awt.GraphicsEnvironment;
+import java.awt.font.TextAttribute;
 import java.awt.image.BufferedImage;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -49,6 +52,31 @@ public final class FontUtils {
    * Simplified-Chinese subset is also caught.
    */
   private static final String CJK_PROBE = "中文你好世界繁简体";
+
+  /**
+   * A single common CJK ideograph used to measure the double-width advance
+   * of a candidate CJK fallback font (see {@link #cjkAdvance(int, String)}).
+   * Every CJK-capable font ships this glyph, so it is a reliable metric
+   * probe regardless of which CJK block the terminal output happens to use.
+   */
+  private static final char CJK_WIDTH_PROBE = '界';
+
+  /**
+   * The maximum extra advance we will add to a CJK fallback via
+   * {@link TextAttribute#TRACKING} when matching it to the primary font's
+   * cell grid. The tracking value equals the number of <em>extra pixels per
+   * glyph</em> (see {@link #scaleCjkToGrid}), so the cap is an absolute pixel
+   * bound, not a ratio: matching a proportional CJK fallback (e.g. Microsoft
+   * YaHei UI, 14px ideograph) to a narrower Latin mono primary (e.g. Consolas
+   * at 8px cell width) needs only +2px. A need for more than this many pixels
+   * almost certainly signals a measurement anomaly, so we refuse to pad and
+   * leave the font as-is rather than open up a visible gap after every glyph.
+   *
+   * <p>Tracking keeps the glyph outline pixel-identical (it only widens the
+   * advance — pure "fill the gap"), unlike a horizontal {@code AffineTransform}
+   * stretch, which smears the outline and makes text look blurry/distorted.
+   */
+  private static final float MAX_CJK_TRACKING = 6f;
 
   /**
    * Emoji probe — covers simple emoji, modifier sequences (skin tone), and
@@ -225,6 +253,90 @@ public final class FontUtils {
     Font mono = findCjkFont(size);
     if (mono != null) return mono;
     return findAnyCjkFont(size);
+  }
+
+  /**
+   * Pad {@code cjk}'s advance so its CJK ideograph occupies exactly
+   * {@code 2 * cellWidth}, defeating the "centre a Unicode symbol" horizontal
+   * nudge that JediTerm's {@code drawChars} applies to any run narrower than
+   * its cell allocation.
+   *
+   * <p>JediTerm computes {@code emptySpace = emptyCells * cellWidth -
+   * drawnWidth} and shifts a run right by {@code emptySpace / 2}. For a CJK
+   * run {@code emptyCells == 2}, so when the CJK fallback's ideograph advance
+   * is narrower than {@code 2 * cellWidth} — the norm for a proportional
+   * fallback such as Microsoft YaHei UI paired with a narrow Latin mono
+   * primary such as Consolas or JetBrains Mono — every CJK glyph is nudged
+   * right, and the selection overlay redraws the last selected character
+   * <em>without</em> that nudge (its trailing DWC cell is cut by the selection
+   * boundary). That is the user-reported "the second-to-last character jumps
+   * right when I select left-to-right". Padding the advance to
+   * {@code 2 * cellWidth} makes {@code emptySpace} zero, restoring cell
+   * alignment for both the normal draw and the selection overlay.
+   *
+   * <p>The padding is done with {@link TextAttribute#TRACKING}, which adds
+   * blank space to the <em>advance</em> only — the glyph outline stays
+   * pixel-identical, so there is no blur or distortion (unlike a horizontal
+   * {@code AffineTransform} stretch, which smears the outline). The tracking
+   * value is the number of extra pixels per glyph, capped by
+   * {@link #MAX_CJK_TRACKING}. The padding is skipped when the fallback
+   * already matches the grid, so a true monospaced CJK font (which
+   * {@link #findCjkFont} would normally have returned first) is passed
+   * through unchanged.
+   *
+   * <p>Returns {@code cjk} unchanged when it is null, when it has no CJK
+   * glyphs, when it already matches, or when the required padding is out of
+   * {@link #MAX_CJK_TRACKING} bounds. Visible for testing.
+   */
+  static Font scaleCjkToGrid(Font cjk, int size, int cellWidth) {
+    if (cjk == null || cellWidth <= 0) return cjk;
+    if (cjk.canDisplayUpTo(CJK_PROBE) != -1) return cjk; // no CJK coverage
+    int advance = cjkAdvance(size, cjk.getFamily());
+    if (advance <= 0) return cjk;
+    int target = 2 * cellWidth;
+    int extra = target - advance;
+    if (Math.abs(extra) <= 1) return cjk; // already aligned
+    if (extra < 0 || extra > MAX_CJK_TRACKING) return cjk; // too narrow to widen, or anomaly
+    float tracking = (float) extra;
+    Map<TextAttribute, Object> attrs = new HashMap<>(cjk.getAttributes());
+    attrs.put(TextAttribute.TRACKING, tracking);
+    return cjk.deriveFont(attrs);
+  }
+
+  /**
+   * Measure the ideograph advance (in whole pixels) of the named family at
+   * {@code size}. Returns {@code 0} when the family is not installed or lacks
+   * the {@link #CJK_WIDTH_PROBE} glyph, so callers can skip scaling.
+   */
+  static int cjkAdvance(int size, String family) {
+    if (family == null) return 0;
+    if (!availableFamilies().contains(family)) return 0;
+    Font font = new Font(family, Font.PLAIN, size);
+    if (!font.canDisplay(CJK_WIDTH_PROBE)) return 0;
+    Graphics2D g = scratchGraphics();
+    try {
+      return g.getFontMetrics(font).charWidth(CJK_WIDTH_PROBE);
+    } finally {
+      g.dispose();
+    }
+  }
+
+  /**
+   * Measure a family's single Latin cell width at {@code size}, mirroring
+   * JediTerm's {@code establishFontMetrics} which uses {@code charWidth('W')}.
+   * Returns {@code 0} when the family is not installed (or has no ASCII
+   * glyphs, which never happens for a real terminal font), signalling callers
+   * to skip any metric-matching.
+   */
+  static int cellWidth(int size, String family) {
+    if (family == null) return 0;
+    if (!availableFamilies().contains(family)) return 0;
+    Graphics2D g = scratchGraphics();
+    try {
+      return g.getFontMetrics(new Font(family, Font.PLAIN, size)).charWidth('W');
+    } finally {
+      g.dispose();
+    }
   }
 
   /**

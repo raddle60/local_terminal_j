@@ -185,6 +185,95 @@ class FontUtilsTest {
     assertEquals(18f, f.getSize(), 0.01f);
   }
 
+  // ---- CJK fallback grid matching (the selection-offset bug) ----
+
+  @Test
+  void scaleCjkToGrid_skipsWhenCjkAlreadyTwoCellsWide() {
+    // A fallback whose ideograph advance is already 2*cellWidth must pass
+    // through untouched — padding a monospaced CJK font would open a gap.
+    assumeFalse(GraphicsEnvironment.isHeadless());
+    Font cjk = FontUtils.findTerminalCjkFallback(14);
+    assumeTrue(cjk != null, "no CJK font installed");
+    int advance = FontUtils.cjkAdvance(14, cjk.getFamily());
+    assumeTrue(advance > 0, "CJK font reported no advance");
+    int cellWidth = advance / 2;
+    Font out = FontUtils.scaleCjkToGrid(cjk, 14, cellWidth);
+    assertNotNull(out);
+    assertFalse(out.isTransformed(),
+        "already-aligned CJK fallback must not be transformed");
+  }
+
+  @Test
+  void scaleCjkToGrid_padsNarrowFallbackToTwoCellsWithoutDeforming() {
+    // The regression case: a proportional CJK fallback (Microsoft YaHei UI)
+    // has a smaller ideograph advance than 2 * cellWidth of a narrow Latin
+    // mono primary. scaleCjkToGrid must pad the advance to exactly 2 cells
+    // WITHOUT deforming the glyph outline (TextAttribute.TRACKING keeps the
+    // outline pixel-identical — no blur/distortion like an affine stretch).
+    assumeFalse(GraphicsEnvironment.isHeadless());
+    Font cjk = FontUtils.findTerminalCjkFallback(14);
+    assumeTrue(cjk != null, "no CJK font installed");
+    int advance = FontUtils.cjkAdvance(14, cjk.getFamily());
+    assumeTrue(advance > 0, "CJK font reported no advance");
+    // Pretend the primary cell is narrower than the fallback's half-width,
+    // as JetBrains Mono (8px) is vs YaHei UI (14px ideograph).
+    int narrowCell = Math.max(1, (int) Math.floor(advance * 0.4));
+    Font out = FontUtils.scaleCjkToGrid(cjk, 14, narrowCell);
+    assertNotNull(out);
+    if (out == cjk) return; // no padding applied (already aligned / capped) — nothing to assert
+    // The glyph outline must be unchanged (no deformation).
+    assertGlyphOutlineUnchanged(cjk, out);
+    // The measured advance must now equal 2 * narrowCell.
+    assertEquals(2 * narrowCell, advanceOf(out),
+        "padded CJK fallback must land on exactly two primary cells");
+  }
+
+  @Test
+  void scaleCjkToGrid_nullAndGarbageAreNoOps() {
+    // null input -> null; a font with no CJK glyphs -> unchanged.
+    assertNull(FontUtils.scaleCjkToGrid(null, 14, 8));
+    // A Latin-only font must never be padded.
+    assumeTrue(installed("Consolas"), "Consolas not installed");
+    Font consolas = new Font("Consolas", Font.PLAIN, 14);
+    Font out = FontUtils.scaleCjkToGrid(consolas, 14, 8);
+    assertEquals(consolas, out, "non-CJK font must be returned unchanged");
+  }
+
+  @Test
+  void cjkAdvance_unknownFamilyReturnsZero() {
+    assertEquals(0, FontUtils.cjkAdvance(14, "Definitely-Not-A-Real-Font-XYZ"));
+    assertEquals(0, FontUtils.cjkAdvance(14, null));
+  }
+
+  /** Measure the {@code '界'} advance of a specific Font instance (honouring attributes). */
+  private static int advanceOf(Font f) {
+    java.awt.image.BufferedImage img =
+        new java.awt.image.BufferedImage(1, 1, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+    java.awt.Graphics2D g = img.createGraphics();
+    try {
+      return g.getFontMetrics(f).charWidth('界');
+    } finally {
+      g.dispose();
+      img.flush();
+    }
+  }
+
+  /** Assert that the {@code '界'} glyph outline of two fonts is identical (no deformation). */
+  private static void assertGlyphOutlineUnchanged(Font a, Font b) {
+    java.awt.image.BufferedImage img =
+        new java.awt.image.BufferedImage(1, 1, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+    java.awt.Graphics2D g = img.createGraphics();
+    try {
+      java.awt.font.FontRenderContext frc = g.getFontRenderContext();
+      java.awt.geom.Rectangle2D ga = a.createGlyphVector(frc, "界").getGlyphOutline(0).getBounds2D();
+      java.awt.geom.Rectangle2D gb = b.createGlyphVector(frc, "界").getGlyphOutline(0).getBounds2D();
+      assertEquals(ga, gb, "glyph outline must be identical — TRACKING must not deform the glyph");
+    } finally {
+      g.dispose();
+      img.flush();
+    }
+  }
+
   @Test
   void createCompositeFont_consolasPlusCjk_combinesIntoOneFont() {
     assumeFalse(GraphicsEnvironment.isHeadless());

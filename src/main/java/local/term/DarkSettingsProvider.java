@@ -197,26 +197,39 @@ public class DarkSettingsProvider extends DefaultSettingsProvider {
   @Override
   public Font getTerminalFont() {
     int size = (int) getTerminalFontSize();
-    String override = overrideFontFamily;
-    String family;
-    if (override != null && !override.isBlank()) {
-      family = override;
-    } else {
-      String[] available = GraphicsEnvironment.getLocalGraphicsEnvironment()
-          .getAvailableFontFamilyNames();
-      Set<String> have = new HashSet<>(Arrays.asList(available));
-      String picked = null;
-      for (String f : FONT_PREFERENCE) {
-        if (have.contains(f)) { picked = f; break; }
-      }
-      family = picked == null ? Font.MONOSPACED : picked;
-    }
     // Return the primary family verbatim. CJK / Symbol / Emoji are
     // handled by their own dedicated slots in the fallback chain
     // (see CompositeFontJediTermWidget.buildFallbackChain), so the
     // whole-line CJK swap that FontUtils.resolveTerminalFont used to
     // do is no longer needed.
-    return new Font(family, Font.PLAIN, size);
+    return new Font(terminalFontFamily(), Font.PLAIN, size);
+  }
+
+  /**
+   * Resolve the primary terminal font's family name — the user's override if
+   * set, otherwise the first installed entry in {@link #FONT_PREFERENCE} (or
+   * {@link Font#MONOSPACED} as a last resort). Extracted from
+   * {@link #getTerminalFont()} so callers that only need the family (e.g.
+   * {@link CompositeFontJediTermWidget#primaryCellWidth} to measure the cell
+   * width) can get it without constructing a {@link DarkSettingsProvider}
+   * instance.
+   *
+   * <p>The auto-detect branch enumerates the installed font families, which
+   * is the expensive part of this method; the instance itself is cheap. Static
+   * and reused so a single call site pays the enumeration once.
+   */
+  public static String terminalFontFamily() {
+    String override = overrideFontFamily;
+    if (override != null && !override.isBlank()) {
+      return override;
+    }
+    String[] available = GraphicsEnvironment.getLocalGraphicsEnvironment()
+        .getAvailableFontFamilyNames();
+    Set<String> have = new HashSet<>(Arrays.asList(available));
+    for (String f : FONT_PREFERENCE) {
+      if (have.contains(f)) return f;
+    }
+    return Font.MONOSPACED;
   }
 
   /**

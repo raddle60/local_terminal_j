@@ -62,21 +62,24 @@ public final class FontUtils {
   private static final char CJK_WIDTH_PROBE = '界';
 
   /**
-   * The maximum extra advance we will add to a CJK fallback via
-   * {@link TextAttribute#TRACKING} when matching it to the primary font's
-   * cell grid. The tracking value equals the number of <em>extra pixels per
-   * glyph</em> (see {@link #scaleCjkToGrid}), so the cap is an absolute pixel
-   * bound, not a ratio: matching a proportional CJK fallback (e.g. Microsoft
-   * YaHei UI, 14px ideograph) to a narrower Latin mono primary (e.g. Consolas
-   * at 8px cell width) needs only +2px. A need for more than this many pixels
-   * almost certainly signals a measurement anomaly, so we refuse to pad and
-   * leave the font as-is rather than open up a visible gap after every glyph.
-   *
-   * <p>Tracking keeps the glyph outline pixel-identical (it only widens the
-   * advance — pure "fill the gap"), unlike a horizontal {@code AffineTransform}
-   * stretch, which smears the outline and makes text look blurry/distorted.
+   * The maximum extra advance (in whole pixels) we will add to a CJK fallback
+   * when matching it to the primary font's cell grid (see
+   * {@link #fitCjkToGrid}). Matching a proportional CJK fallback (e.g.
+   * Microsoft YaHei UI, 14px ideograph) to a narrower Latin mono primary
+   * (e.g. Consolas / JetBrains Mono at 8px cell width) needs only +2px. A need
+   * for more than this many pixels almost certainly signals a measurement
+   * anomaly, so we refuse to pad and leave the font as-is.
    */
-  private static final float MAX_CJK_TRACKING = 6f;
+  private static final int MAX_CJK_EXTRA_PX = 6;
+
+  /**
+   * The maximum vertical shift (in whole pixels) we will apply to a CJK
+   * fallback to align its baseline with the primary font. The difference
+   * between two well-formed fonts' descents is 0 or 1px at terminal sizes, so
+   * a need for more than a few pixels means the fonts are grossly mismatched
+   * and we leave the fallback as-is rather than mis-place it.
+   */
+  private static final int MAX_CJK_VERTICAL_SHIFT = 4;
 
   /**
    * Emoji probe — covers simple emoji, modifier sequences (skin tone), and
@@ -256,50 +259,64 @@ public final class FontUtils {
   }
 
   /**
-   * Pad {@code cjk}'s advance so its CJK ideograph occupies exactly
-   * {@code 2 * cellWidth}, defeating the "centre a Unicode symbol" horizontal
-   * nudge that JediTerm's {@code drawChars} applies to any run narrower than
-   * its cell allocation.
+   * Fit {@code cjk} to the primary font's terminal grid in two independent
+   * axes, without deforming the glyph outline:
    *
-   * <p>JediTerm computes {@code emptySpace = emptyCells * cellWidth -
-   * drawnWidth} and shifts a run right by {@code emptySpace / 2}. For a CJK
-   * run {@code emptyCells == 2}, so when the CJK fallback's ideograph advance
-   * is narrower than {@code 2 * cellWidth} — the norm for a proportional
-   * fallback such as Microsoft YaHei UI paired with a narrow Latin mono
-   * primary such as Consolas or JetBrains Mono — every CJK glyph is nudged
-   * right, and the selection overlay redraws the last selected character
-   * <em>without</em> that nudge (its trailing DWC cell is cut by the selection
-   * boundary). That is the user-reported "the second-to-last character jumps
-   * right when I select left-to-right". Padding the advance to
-   * {@code 2 * cellWidth} makes {@code emptySpace} zero, restoring cell
-   * alignment for both the normal draw and the selection overlay.
+   * <ol>
+   *   <li><b>Horizontal</b> — pad the advance so a CJK ideograph occupies
+   *       exactly {@code 2 * cellWidth}, defeating the "centre a Unicode
+   *       symbol" nudge that JediTerm's {@code drawChars} applies to any run
+   *       narrower than its cell allocation (the originally-reported selection
+   *       offset).</li>
+   *   <li><b>Vertical</b> — shift the baseline so the CJK fallback's descent
+   *       equals the primary font's descent, fixing the pre-existing "Chinese
+   *       sits a hair lower than English on the same line" misalignment.
+   *       JediTerm positions each run's baseline at
+   *       {@code rowBottom - font.descent}, so two fonts with different
+   *       descents (JetBrains Mono descent 5 vs Microsoft YaHei UI descent 4)
+   *       land on different baselines.</li>
+   * </ol>
    *
-   * <p>The padding is done with {@link TextAttribute#TRACKING}, which adds
-   * blank space to the <em>advance</em> only — the glyph outline stays
-   * pixel-identical, so there is no blur or distortion (unlike a horizontal
-   * {@code AffineTransform} stretch, which smears the outline). The tracking
-   * value is the number of extra pixels per glyph, capped by
-   * {@link #MAX_CJK_TRACKING}. The padding is skipped when the fallback
+   * <p>Both corrections use {@link TextAttribute#TRACKING} (advance-only —
+   * adds blank space, never moves a glyph) and a vertical
+   * {@link java.awt.geom.AffineTransform} translation (shifts the whole glyph,
+   * outline preserved). Neither distorts the outline the way a horizontal
+   * affine <em>scale</em> would. The corrections are skipped when the font
    * already matches the grid, so a true monospaced CJK font (which
-   * {@link #findCjkFont} would normally have returned first) is passed
-   * through unchanged.
+   * {@link #findCjkFont} would normally have returned first) passes through
+   * unchanged.
    *
-   * <p>Returns {@code cjk} unchanged when it is null, when it has no CJK
-   * glyphs, when it already matches, or when the required padding is out of
-   * {@link #MAX_CJK_TRACKING} bounds. Visible for testing.
+   * <p>Returns {@code cjk} unchanged when it is null, has no CJK glyphs, or
+   * the required correction is out of {@link #MAX_CJK_EXTRA_PX} /
+   * {@link #MAX_CJK_VERTICAL_SHIFT} bounds. Visible for testing.
    */
-  static Font scaleCjkToGrid(Font cjk, int size, int cellWidth) {
-    if (cjk == null || cellWidth <= 0) return cjk;
+  static Font fitCjkToGrid(Font cjk, int size, int cellWidth, int primaryDescent) {
+    if (cjk == null || cellWidth <= 0 || primaryDescent < 0) return cjk;
     if (cjk.canDisplayUpTo(CJK_PROBE) != -1) return cjk; // no CJK coverage
     int advance = cjkAdvance(size, cjk.getFamily());
     if (advance <= 0) return cjk;
-    int target = 2 * cellWidth;
-    int extra = target - advance;
-    if (Math.abs(extra) <= 1) return cjk; // already aligned
-    if (extra < 0 || extra > MAX_CJK_TRACKING) return cjk; // too narrow to widen, or anomaly
-    float tracking = (float) extra;
+    int cjkDescent = descentOf(size, cjk.getFamily());
+    if (cjkDescent < 0) return cjk;
+
+    int extra = 2 * cellWidth - advance;           // horizontal pad needed (px)
+    int shift = primaryDescent - cjkDescent;       // +ve => shift glyph up
+
+    boolean padH = Math.abs(extra) > 1 && extra >= 0 && extra <= MAX_CJK_EXTRA_PX;
+    boolean padV = Math.abs(shift) > 0 && Math.abs(shift) <= MAX_CJK_VERTICAL_SHIFT;
+
+    if (!padH && !padV) return cjk; // nothing to correct
+
     Map<TextAttribute, Object> attrs = new HashMap<>(cjk.getAttributes());
-    attrs.put(TextAttribute.TRACKING, tracking);
+    if (padH) {
+      // TRACKING is an em fraction (extra advance = tracking * font em). The
+      // measured ideograph advance is the em, so the fraction is extra/advance.
+      attrs.put(TextAttribute.TRACKING, (float) extra / advance);
+    }
+    if (padV) {
+      // Negative y translates the glyph upward (toward the primary baseline).
+      attrs.put(TextAttribute.TRANSFORM,
+          java.awt.geom.AffineTransform.getTranslateInstance(0, -shift));
+    }
     return cjk.deriveFont(attrs);
   }
 
@@ -316,6 +333,23 @@ public final class FontUtils {
     Graphics2D g = scratchGraphics();
     try {
       return g.getFontMetrics(font).charWidth(CJK_WIDTH_PROBE);
+    } finally {
+      g.dispose();
+    }
+  }
+
+  /**
+   * Measure a family's {@code FontMetrics.getDescent()} at {@code size} — the
+   * value JediTerm subtracts from the row bottom to place the baseline. Returns
+   * {@code -1} when the family is not installed, signalling callers to skip any
+   * vertical adjustment.
+   */
+  static int descentOf(int size, String family) {
+    if (family == null) return -1;
+    if (!availableFamilies().contains(family)) return -1;
+    Graphics2D g = scratchGraphics();
+    try {
+      return g.getFontMetrics(new Font(family, Font.PLAIN, size)).getDescent();
     } finally {
       g.dispose();
     }

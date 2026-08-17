@@ -89,17 +89,28 @@ public class CompositeFontJediTermWidget extends JediTermWidget {
     return FontUtils.cellWidth(size, DarkSettingsProvider.terminalFontFamily());
   }
 
+  /**
+   * Measure the primary font's {@code FontMetrics.getDescent()} at
+   * {@code size} — the value JediTerm subtracts from the row bottom to place
+   * each run's baseline. The CJK fallback must match it (via
+   * {@link FontUtils#fitCjkToGrid}) so Chinese and English share the same
+   * baseline on a mixed line. Falls back to {@code -1} when the family isn't
+   * installed, which {@link FontUtils#fitCjkToGrid} tolerates (skips the
+   * vertical adjustment).
+   */
+  static int primaryDescent(int size) {
+    return FontUtils.descentOf(size, DarkSettingsProvider.terminalFontFamily());
+  }
+
   static FontResolver buildFallbackChain(int size) {
     List<Font> chain = new ArrayList<>(3);
 
-    // CJK slot — pad the fallback's advance so a CJK ideograph occupies
-    // exactly two primary cells, defeating JediTerm's "centre the Unicode
-    // symbol" shift that nudges every CJK run right (and inconsistently so
-    // during selection) when the fallback's ideograph advance is narrower
-    // than 2 * cellWidth (e.g. Microsoft YaHei UI under a JetBrains Mono
-    // primary). Padding is a no-op for a true monospaced CJK fallback and
-    // never deforms the glyph outline (TextAttribute.TRACKING adds advance
-    // only).
+    // CJK slot — fit the fallback to the primary's terminal grid on both
+    // axes: pad the advance so a CJK ideograph occupies exactly two cells
+    // (fixes the selection offset), and shift the baseline so its descent
+    // matches the primary's (fixes Chinese sitting a hair lower than English).
+    // Padding/shift never deform the glyph outline (TRACKING + vertical
+    // translate), and are no-ops for a true monospaced CJK fallback.
     String cjkFamily = DarkSettingsProvider.getCjkFontFamily();
     Font cjk;
     if (cjkFamily != null && !cjkFamily.isBlank()) {
@@ -107,7 +118,7 @@ public class CompositeFontJediTermWidget extends JediTermWidget {
     } else {
       cjk = FontUtils.findTerminalCjkFallback(size);
     }
-    cjk = FontUtils.scaleCjkToGrid(cjk, size, primaryCellWidth(size));
+    cjk = FontUtils.fitCjkToGrid(cjk, size, primaryCellWidth(size), primaryDescent(size));
     if (cjk != null) chain.add(cjk);
 
     // Symbol slot — placed BEFORE emoji so ✔ uses the narrower text-

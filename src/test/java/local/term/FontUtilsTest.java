@@ -185,58 +185,85 @@ class FontUtilsTest {
     assertEquals(18f, f.getSize(), 0.01f);
   }
 
-  // ---- CJK fallback grid matching (the selection-offset bug) ----
+  // ---- CJK fallback grid fitting (selection-offset + baseline alignment) ----
 
   @Test
-  void scaleCjkToGrid_skipsWhenCjkAlreadyTwoCellsWide() {
-    // A fallback whose ideograph advance is already 2*cellWidth must pass
-    // through untouched — padding a monospaced CJK font would open a gap.
+  void fitCjkToGrid_skipsWhenAlreadyAligned() {
+    // A fallback whose ideograph advance is already 2*cellWidth AND whose
+    // descent matches the primary must pass through untouched.
     assumeFalse(GraphicsEnvironment.isHeadless());
     Font cjk = FontUtils.findTerminalCjkFallback(14);
     assumeTrue(cjk != null, "no CJK font installed");
     int advance = FontUtils.cjkAdvance(14, cjk.getFamily());
-    assumeTrue(advance > 0, "CJK font reported no advance");
-    int cellWidth = advance / 2;
-    Font out = FontUtils.scaleCjkToGrid(cjk, 14, cellWidth);
+    int descent = FontUtils.descentOf(14, cjk.getFamily());
+    assumeTrue(advance > 0 && descent >= 0, "CJK font metrics unavailable");
+    Font out = FontUtils.fitCjkToGrid(cjk, 14, advance / 2, descent);
     assertNotNull(out);
     assertFalse(out.isTransformed(),
         "already-aligned CJK fallback must not be transformed");
   }
 
   @Test
-  void scaleCjkToGrid_padsNarrowFallbackToTwoCellsWithoutDeforming() {
-    // The regression case: a proportional CJK fallback (Microsoft YaHei UI)
-    // has a smaller ideograph advance than 2 * cellWidth of a narrow Latin
-    // mono primary. scaleCjkToGrid must pad the advance to exactly 2 cells
-    // WITHOUT deforming the glyph outline (TextAttribute.TRACKING keeps the
-    // outline pixel-identical — no blur/distortion like an affine stretch).
+  void fitCjkToGrid_padsNarrowFallbackToTwoCellsWithoutDeforming() {
+    // A proportional CJK fallback (Microsoft YaHei UI) has a smaller ideograph
+    // advance than 2 * cellWidth of a narrow Latin mono primary. fitCjkToGrid
+    // must pad the advance to exactly 2 cells WITHOUT deforming the glyph
+    // outline (TRACKING adds advance only).
     assumeFalse(GraphicsEnvironment.isHeadless());
     Font cjk = FontUtils.findTerminalCjkFallback(14);
     assumeTrue(cjk != null, "no CJK font installed");
     int advance = FontUtils.cjkAdvance(14, cjk.getFamily());
-    assumeTrue(advance > 0, "CJK font reported no advance");
+    int descent = FontUtils.descentOf(14, cjk.getFamily());
+    assumeTrue(advance > 0 && descent >= 0, "CJK font metrics unavailable");
     // Pretend the primary cell is narrower than the fallback's half-width,
-    // as JetBrains Mono (8px) is vs YaHei UI (14px ideograph).
+    // as JetBrains Mono (8px) is vs YaHei UI (14px ideograph). Pass a
+    // matching descent so only the horizontal correction applies.
     int narrowCell = Math.max(1, (int) Math.floor(advance * 0.4));
-    Font out = FontUtils.scaleCjkToGrid(cjk, 14, narrowCell);
+    Font out = FontUtils.fitCjkToGrid(cjk, 14, narrowCell, descent);
     assertNotNull(out);
-    if (out == cjk) return; // no padding applied (already aligned / capped) — nothing to assert
-    // The glyph outline must be unchanged (no deformation).
-    assertGlyphOutlineUnchanged(cjk, out);
-    // The measured advance must now equal 2 * narrowCell.
-    assertEquals(2 * narrowCell, advanceOf(out),
+    if (out == cjk) return; // no correction applied (already aligned / capped)
+    // The glyph outline must not be deformed (width/height unchanged; a
+    // vertical translation would move it but never squish it).
+    assertGlyphNotDeformed(cjk, out);
+    // The measured advance (charsWidth, tracking-aware) must now equal 2 * narrowCell.
+    assertEquals(2 * narrowCell, charsWidthOf(out),
         "padded CJK fallback must land on exactly two primary cells");
   }
 
   @Test
-  void scaleCjkToGrid_nullAndGarbageAreNoOps() {
-    // null input -> null; a font with no CJK glyphs -> unchanged.
-    assertNull(FontUtils.scaleCjkToGrid(null, 14, 8));
-    // A Latin-only font must never be padded.
+  void fitCjkToGrid_shiftsBaselineWhenDescentsDiffer() {
+    // The pre-existing vertical bug: primary (JetBrains Mono) descent 5 vs CJK
+    // fallback (YaHei UI) descent 4 makes Chinese sit lower than English.
+    // fitCjkToGrid must translate the fallback so the two baselines coincide,
+    // without touching the advance.
+    assumeFalse(GraphicsEnvironment.isHeadless());
+    Font cjk = FontUtils.findTerminalCjkFallback(14);
+    assumeTrue(cjk != null, "no CJK font installed");
+    int advance = FontUtils.cjkAdvance(14, cjk.getFamily());
+    int descent = FontUtils.descentOf(14, cjk.getFamily());
+    assumeTrue(advance > 0 && descent >= 0, "CJK font metrics unavailable");
+    int primaryDescent = descent + 1; // pretend primary sits 1px lower
+    // Match the horizontal axis so only the vertical shift is applied.
+    int cellWidth = advance / 2;
+    Font out = FontUtils.fitCjkToGrid(cjk, 14, cellWidth, primaryDescent);
+    assertNotNull(out);
+    if (out == cjk) return; // no vertical correction needed on this system
+    // Advance must be unchanged (horizontal already aligned).
+    assertEquals(advance, charsWidthOf(out),
+        "baseline shift must not change the advance");
+    // The glyph must be translated up by exactly 1px (outline same size, y shifted -1).
+    assertGlyphShiftedUpBy(out, cjk, 1);
+  }
+
+  @Test
+  void fitCjkToGrid_nullAndGarbageAreNoOps() {
+    assertNull(FontUtils.fitCjkToGrid(null, 14, 8, 5));
+    assertNull(FontUtils.fitCjkToGrid(null, 14, 0, 5));
+    // A Latin-only font must never be fitted.
     assumeTrue(installed("Consolas"), "Consolas not installed");
     Font consolas = new Font("Consolas", Font.PLAIN, 14);
-    Font out = FontUtils.scaleCjkToGrid(consolas, 14, 8);
-    assertEquals(consolas, out, "non-CJK font must be returned unchanged");
+    assertEquals(consolas, FontUtils.fitCjkToGrid(consolas, 14, 8, 5),
+        "non-CJK font must be returned unchanged");
   }
 
   @Test
@@ -245,21 +272,27 @@ class FontUtilsTest {
     assertEquals(0, FontUtils.cjkAdvance(14, null));
   }
 
-  /** Measure the {@code '界'} advance of a specific Font instance (honouring attributes). */
-  private static int advanceOf(Font f) {
+  @Test
+  void descentOf_unknownFamilyReturnsNegativeOne() {
+    assertEquals(-1, FontUtils.descentOf(14, "Definitely-Not-A-Real-Font-XYZ"));
+    assertEquals(-1, FontUtils.descentOf(14, null));
+  }
+
+  /** Measure the {@code '界'} advance of a Font instance, tracking-aware. */
+  private static int charsWidthOf(Font f) {
     java.awt.image.BufferedImage img =
         new java.awt.image.BufferedImage(1, 1, java.awt.image.BufferedImage.TYPE_INT_ARGB);
     java.awt.Graphics2D g = img.createGraphics();
     try {
-      return g.getFontMetrics(f).charWidth('界');
+      return g.getFontMetrics(f).charsWidth(new char[]{'界'}, 0, 1);
     } finally {
       g.dispose();
       img.flush();
     }
   }
 
-  /** Assert that the {@code '界'} glyph outline of two fonts is identical (no deformation). */
-  private static void assertGlyphOutlineUnchanged(Font a, Font b) {
+  /** Assert the {@code '界'} glyph outline is not squished (width/height unchanged). */
+  private static void assertGlyphNotDeformed(Font a, Font b) {
     java.awt.image.BufferedImage img =
         new java.awt.image.BufferedImage(1, 1, java.awt.image.BufferedImage.TYPE_INT_ARGB);
     java.awt.Graphics2D g = img.createGraphics();
@@ -267,7 +300,25 @@ class FontUtilsTest {
       java.awt.font.FontRenderContext frc = g.getFontRenderContext();
       java.awt.geom.Rectangle2D ga = a.createGlyphVector(frc, "界").getGlyphOutline(0).getBounds2D();
       java.awt.geom.Rectangle2D gb = b.createGlyphVector(frc, "界").getGlyphOutline(0).getBounds2D();
-      assertEquals(ga, gb, "glyph outline must be identical — TRACKING must not deform the glyph");
+      assertEquals(ga.getWidth(), gb.getWidth(), 0.001, "glyph width must be unchanged");
+      assertEquals(ga.getHeight(), gb.getHeight(), 0.001, "glyph height must be unchanged");
+    } finally {
+      g.dispose();
+      img.flush();
+    }
+  }
+
+  /** Assert the glyph was translated upward by {@code dy} px (outline y shifted -dy). */
+  private static void assertGlyphShiftedUpBy(Font shifted, Font original, int dy) {
+    java.awt.image.BufferedImage img =
+        new java.awt.image.BufferedImage(1, 1, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+    java.awt.Graphics2D g = img.createGraphics();
+    try {
+      java.awt.font.FontRenderContext frc = g.getFontRenderContext();
+      double y0 = original.createGlyphVector(frc, "界").getGlyphOutline(0).getBounds2D().getY();
+      double y1 = shifted.createGlyphVector(frc, "界").getGlyphOutline(0).getBounds2D().getY();
+      assertEquals(-dy, y1 - y0, 0.5,
+          "glyph must be translated up by " + dy + "px (outline y must decrease)");
     } finally {
       g.dispose();
       img.flush();

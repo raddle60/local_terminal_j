@@ -196,8 +196,9 @@ class FontUtilsTest {
     assumeTrue(cjk != null, "no CJK font installed");
     int advance = FontUtils.cjkAdvance(14, cjk.getFamily());
     int descent = FontUtils.descentOf(14, cjk.getFamily());
-    assumeTrue(advance > 0 && descent >= 0, "CJK font metrics unavailable");
-    Font out = FontUtils.fitCjkToGrid(cjk, 14, advance / 2, descent);
+    int ascent = FontUtils.ascentOf(14, cjk.getFamily());
+    assumeTrue(advance > 0 && descent >= 0 && ascent >= 0, "CJK font metrics unavailable");
+    Font out = FontUtils.fitCjkToGrid(cjk, 14, advance / 2, descent, ascent);
     assertNotNull(out);
     assertFalse(out.isTransformed(),
         "already-aligned CJK fallback must not be transformed");
@@ -214,12 +215,13 @@ class FontUtilsTest {
     assumeTrue(cjk != null, "no CJK font installed");
     int advance = FontUtils.cjkAdvance(14, cjk.getFamily());
     int descent = FontUtils.descentOf(14, cjk.getFamily());
-    assumeTrue(advance > 0 && descent >= 0, "CJK font metrics unavailable");
+    int ascent = FontUtils.ascentOf(14, cjk.getFamily());
+    assumeTrue(advance > 0 && descent >= 0 && ascent >= 0, "CJK font metrics unavailable");
     // Pretend the primary cell is narrower than the fallback's half-width,
-    // as JetBrains Mono (8px) is vs YaHei UI (14px ideograph). Pass a
-    // matching descent so only the horizontal correction applies.
+    // as JetBrains Mono (8px) is vs YaHei UI (14px ideograph). Pass matching
+    // descent + ascent so only the horizontal correction applies.
     int narrowCell = Math.max(1, (int) Math.floor(advance * 0.4));
-    Font out = FontUtils.fitCjkToGrid(cjk, 14, narrowCell, descent);
+    Font out = FontUtils.fitCjkToGrid(cjk, 14, narrowCell, descent, ascent);
     assertNotNull(out);
     if (out == cjk) return; // no correction applied (already aligned / capped)
     // The glyph outline must not be deformed (width/height unchanged; a
@@ -241,11 +243,12 @@ class FontUtilsTest {
     assumeTrue(cjk != null, "no CJK font installed");
     int advance = FontUtils.cjkAdvance(14, cjk.getFamily());
     int descent = FontUtils.descentOf(14, cjk.getFamily());
-    assumeTrue(advance > 0 && descent >= 0, "CJK font metrics unavailable");
+    int ascent = FontUtils.ascentOf(14, cjk.getFamily());
+    assumeTrue(advance > 0 && descent >= 0 && ascent >= 0, "CJK font metrics unavailable");
     int primaryDescent = descent + 1; // pretend primary sits 1px lower
     // Match the horizontal axis so only the vertical shift is applied.
     int cellWidth = advance / 2;
-    Font out = FontUtils.fitCjkToGrid(cjk, 14, cellWidth, primaryDescent);
+    Font out = FontUtils.fitCjkToGrid(cjk, 14, cellWidth, primaryDescent, ascent);
     assertNotNull(out);
     if (out == cjk) return; // no vertical correction needed on this system
     // Advance must be unchanged (horizontal already aligned).
@@ -256,13 +259,35 @@ class FontUtilsTest {
   }
 
   @Test
+  void fitCjkToGrid_skipsVerticalWhenAscentMismatches() {
+    // A legacy CJK font (SimSun/KaiTi, ascent 12) vs a modern mono primary
+    // (ascent 15): forcing descents to match would float the glyph ~3px too
+    // high. fitCjkToGrid must leave the vertical axis untouched (and, with a
+    // matching horizontal axis, return the font unchanged).
+    assumeFalse(GraphicsEnvironment.isHeadless());
+    Font cjk = FontUtils.findTerminalCjkFallback(14);
+    assumeTrue(cjk != null, "no CJK font installed");
+    int advance = FontUtils.cjkAdvance(14, cjk.getFamily());
+    int descent = FontUtils.descentOf(14, cjk.getFamily());
+    int ascent = FontUtils.ascentOf(14, cjk.getFamily());
+    assumeTrue(advance > 0 && descent >= 0 && ascent >= 0, "CJK font metrics unavailable");
+    int primaryDescent = descent + 3;            // would want a +3px shift
+    int primaryAscent = ascent + 4;              // but the em-box ascent is way off
+    int cellWidth = advance / 2;                 // horizontal already aligned
+    Font out = FontUtils.fitCjkToGrid(cjk, 14, cellWidth, primaryDescent, primaryAscent);
+    assertNotNull(out);
+    assertFalse(out.isTransformed(),
+        "ascent-mismatched CJK fallback must not be vertically shifted");
+  }
+
+  @Test
   void fitCjkToGrid_nullAndGarbageAreNoOps() {
-    assertNull(FontUtils.fitCjkToGrid(null, 14, 8, 5));
-    assertNull(FontUtils.fitCjkToGrid(null, 14, 0, 5));
+    assertNull(FontUtils.fitCjkToGrid(null, 14, 8, 5, 15));
+    assertNull(FontUtils.fitCjkToGrid(null, 14, 0, 5, 15));
     // A Latin-only font must never be fitted.
     assumeTrue(installed("Consolas"), "Consolas not installed");
     Font consolas = new Font("Consolas", Font.PLAIN, 14);
-    assertEquals(consolas, FontUtils.fitCjkToGrid(consolas, 14, 8, 5),
+    assertEquals(consolas, FontUtils.fitCjkToGrid(consolas, 14, 8, 5, 15),
         "non-CJK font must be returned unchanged");
   }
 
@@ -276,6 +301,12 @@ class FontUtilsTest {
   void descentOf_unknownFamilyReturnsNegativeOne() {
     assertEquals(-1, FontUtils.descentOf(14, "Definitely-Not-A-Real-Font-XYZ"));
     assertEquals(-1, FontUtils.descentOf(14, null));
+  }
+
+  @Test
+  void ascentOf_unknownFamilyReturnsNegativeOne() {
+    assertEquals(-1, FontUtils.ascentOf(14, "Definitely-Not-A-Real-Font-XYZ"));
+    assertEquals(-1, FontUtils.ascentOf(14, null));
   }
 
   /** Measure the {@code '界'} advance of a Font instance, tracking-aware. */

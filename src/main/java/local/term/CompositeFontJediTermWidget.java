@@ -102,6 +102,17 @@ public class CompositeFontJediTermWidget extends JediTermWidget {
     return FontUtils.descentOf(size, DarkSettingsProvider.terminalFontFamily());
   }
 
+  /**
+   * Measure the primary font's {@code FontMetrics.getAscent()} at {@code size}.
+   * Passed to {@link FontUtils#fitCjkToGrid} alongside the descent so it can
+   * gate the vertical baseline alignment: when the CJK fallback's em-box ascent
+   * is far from the primary's (a legacy font vs a modern mono), descent-only
+   * alignment would mis-place the glyph, so the fit skips it.
+   */
+  static int primaryAscent(int size) {
+    return FontUtils.ascentOf(size, DarkSettingsProvider.terminalFontFamily());
+  }
+
   static FontResolver buildFallbackChain(int size) {
     List<Font> chain = new ArrayList<>(3);
 
@@ -118,7 +129,7 @@ public class CompositeFontJediTermWidget extends JediTermWidget {
     } else {
       cjk = FontUtils.findTerminalCjkFallback(size);
     }
-    cjk = FontUtils.fitCjkToGrid(cjk, size, primaryCellWidth(size), primaryDescent(size));
+    cjk = FontUtils.fitCjkToGrid(cjk, size, primaryCellWidth(size), primaryDescent(size), primaryAscent(size));
     if (cjk != null) chain.add(cjk);
 
     // Symbol slot — placed BEFORE emoji so ✔ uses the narrower text-

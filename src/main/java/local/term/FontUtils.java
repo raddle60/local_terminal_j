@@ -82,6 +82,17 @@ public final class FontUtils {
   private static final int MAX_CJK_VERTICAL_SHIFT = 4;
 
   /**
+   * The largest ascent mismatch (in whole pixels) we tolerate before skipping
+   * the vertical baseline alignment. Descent alignment is only meaningful when
+   * the CJK fallback and the primary have comparable em-box ascents — a legacy
+   * CJK font such as SimSun / KaiTi has ascent 12 while a modern mono primary
+   * has ascent 15, so forcing their descents to match would float the Chinese
+   * glyph ~3px too high. When the ascent gap exceeds this bound we leave the
+   * vertical axis untouched (horizontal advance padding is unaffected).
+   */
+  private static final int MAX_CJK_ASCENT_GAP = 2;
+
+  /**
    * Emoji probe — covers simple emoji, modifier sequences (skin tone), and
    * ZWJ sequences (family emoji). Kept as plain BMP/SMP code points so the
    * probe itself is platform-independent; we rely on
@@ -290,27 +301,35 @@ public final class FontUtils {
    * the required correction is out of {@link #MAX_CJK_EXTRA_PX} /
    * {@link #MAX_CJK_VERTICAL_SHIFT} bounds. Visible for testing.
    */
-  static Font fitCjkToGrid(Font cjk, int size, int cellWidth, int primaryDescent) {
-    if (cjk == null || cellWidth <= 0 || primaryDescent < 0) return cjk;
+  static Font fitCjkToGrid(Font cjk, int size, int cellWidth, int primaryDescent, int primaryAscent) {
+    if (cjk == null || cellWidth <= 0 || primaryDescent < 0 || primaryAscent < 0) return cjk;
     if (cjk.canDisplayUpTo(CJK_PROBE) != -1) return cjk; // no CJK coverage
     int advance = cjkAdvance(size, cjk.getFamily());
     if (advance <= 0) return cjk;
     int cjkDescent = descentOf(size, cjk.getFamily());
-    if (cjkDescent < 0) return cjk;
+    int cjkAscent = ascentOf(size, cjk.getFamily());
+    if (cjkDescent < 0 || cjkAscent < 0) return cjk;
 
     int extra = 2 * cellWidth - advance;           // horizontal pad needed (px)
     int shift = primaryDescent - cjkDescent;       // +ve => shift glyph up
 
     boolean padH = Math.abs(extra) > 1 && extra >= 0 && extra <= MAX_CJK_EXTRA_PX;
-    boolean padV = Math.abs(shift) > 0 && Math.abs(shift) <= MAX_CJK_VERTICAL_SHIFT;
+    // Vertical alignment is only valid when the two fonts have comparable
+    // em-box heights; otherwise forcing the descents to match floats/drops the
+    // whole glyph. A legacy CJK font (SimSun/KaiTi, ascent 12) paired with a
+    // modern mono primary (ascent 15) would drift ~3px, so we skip it there.
+    boolean padV = Math.abs(shift) > 0
+        && Math.abs(shift) <= MAX_CJK_VERTICAL_SHIFT
+        && Math.abs(cjkAscent - primaryAscent) <= MAX_CJK_ASCENT_GAP;
 
     if (!padH && !padV) return cjk; // nothing to correct
 
     Map<TextAttribute, Object> attrs = new HashMap<>(cjk.getAttributes());
     if (padH) {
-      // TRACKING is an em fraction (extra advance = tracking * font em). The
-      // measured ideograph advance is the em, so the fraction is extra/advance.
-      attrs.put(TextAttribute.TRACKING, (float) extra / advance);
+      // TRACKING adds blank space in em units: a CJK ideograph's advance is
+      // exactly 1 em == the point size (full-width glyphs are 1 em wide by
+      // definition), so the fraction that adds `extra` pixels is extra/size.
+      attrs.put(TextAttribute.TRACKING, (float) extra / size);
     }
     if (padV) {
       // Negative y translates the glyph upward (toward the primary baseline).
@@ -350,6 +369,23 @@ public final class FontUtils {
     Graphics2D g = scratchGraphics();
     try {
       return g.getFontMetrics(new Font(family, Font.PLAIN, size)).getDescent();
+    } finally {
+      g.dispose();
+    }
+  }
+
+  /**
+   * Measure a family's {@code FontMetrics.getAscent()} at {@code size}. Returns
+   * {@code -1} when the family is not installed. Used to gate vertical baseline
+   * alignment: two fonts with very different em-box ascents (a legacy CJK font
+   * vs a modern mono primary) cannot be baseline-aligned by descent alone.
+   */
+  static int ascentOf(int size, String family) {
+    if (family == null) return -1;
+    if (!availableFamilies().contains(family)) return -1;
+    Graphics2D g = scratchGraphics();
+    try {
+      return g.getFontMetrics(new Font(family, Font.PLAIN, size)).getAscent();
     } finally {
       g.dispose();
     }

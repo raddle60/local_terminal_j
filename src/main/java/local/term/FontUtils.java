@@ -278,7 +278,11 @@ public final class FontUtils {
    *       exactly {@code 2 * cellWidth}, defeating the "centre a Unicode
    *       symbol" nudge that JediTerm's {@code drawChars} applies to any run
    *       narrower than its cell allocation (the originally-reported selection
-   *       offset).</li>
+   *       offset). The advance padding is added via {@link TextAttribute#TRACKING}
+   *       (trailing blank space only), and a matching rightward
+   *       {@link java.awt.geom.AffineTransform} translation re-centres the glyph
+   *       in its two-cell box so the leading gap before a CJK char (e.g.
+   *       {@code "abc中"}) is preserved instead of collapsed by left-alignment.</li>
    *   <li><b>Vertical</b> — shift the baseline so the CJK fallback's descent
    *       equals the primary font's descent, fixing the pre-existing "Chinese
    *       sits a hair lower than English on the same line" misalignment.
@@ -288,11 +292,11 @@ public final class FontUtils {
    *       land on different baselines.</li>
    * </ol>
    *
-   * <p>Both corrections use {@link TextAttribute#TRACKING} (advance-only —
-   * adds blank space, never moves a glyph) and a vertical
-   * {@link java.awt.geom.AffineTransform} translation (shifts the whole glyph,
-   * outline preserved). Neither distorts the outline the way a horizontal
-   * affine <em>scale</em> would. The corrections are skipped when the font
+   * <p>The horizontal correction uses {@link TextAttribute#TRACKING} (advance-only
+   * — adds blank space) combined with a rightward translate, and the vertical
+   * correction a vertical {@link java.awt.geom.AffineTransform} translation (shifts
+   * the whole glyph). Neither distorts the outline the way a horizontal affine
+   * <em>scale</em> would. The corrections are skipped when the font
    * already matches the grid, so a true monospaced CJK font (which
    * {@link #findCjkFont} would normally have returned first) passes through
    * unchanged.
@@ -325,16 +329,30 @@ public final class FontUtils {
     if (!padH && !padV) return cjk; // nothing to correct
 
     Map<TextAttribute, Object> attrs = new HashMap<>(cjk.getAttributes());
+    double tx = 0;
     if (padH) {
       // TRACKING adds blank space in em units: a CJK ideograph's advance is
       // exactly 1 em == the point size (full-width glyphs are 1 em wide by
       // definition), so the fraction that adds `extra` pixels is extra/size.
+      // This pads the advance to 2*cellWidth so JediTerm's drawChars no longer
+      // centres the run (emptySpace becomes 0) and the selection highlight
+      // aligns. But TRACKING pads only the trailing side, which would leave the
+      // glyph left-aligned in its two cells and crowd the Latin text that
+      // precedes it ("abc中" would touch). A matching rightward translate
+      // re-centres the glyph — same visual position as JediTerm's old
+      // emptySpace/2 centring, but carried by the font so it applies
+      // consistently in the selection re-draw path too.
       attrs.put(TextAttribute.TRACKING, (float) extra / size);
+      tx = extra / 2.0;
     }
+    double ty = 0;
     if (padV) {
       // Negative y translates the glyph upward (toward the primary baseline).
+      ty = -shift;
+    }
+    if (tx != 0 || ty != 0) {
       attrs.put(TextAttribute.TRANSFORM,
-          java.awt.geom.AffineTransform.getTranslateInstance(0, -shift));
+          java.awt.geom.AffineTransform.getTranslateInstance(tx, ty));
     }
     return cjk.deriveFont(attrs);
   }

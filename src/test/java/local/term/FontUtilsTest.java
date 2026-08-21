@@ -209,7 +209,9 @@ class FontUtilsTest {
     // A proportional CJK fallback (Microsoft YaHei UI) has a smaller ideograph
     // advance than 2 * cellWidth of a narrow Latin mono primary. fitCjkToGrid
     // must pad the advance to exactly 2 cells WITHOUT deforming the glyph
-    // outline (TRACKING adds advance only).
+    // outline (TRACKING adds advance only), and re-centre the glyph in the
+    // two cells (a rightward translate of extra/2) so English text preceding
+    // the CJK char keeps its spacing.
     assumeFalse(GraphicsEnvironment.isHeadless());
     Font cjk = FontUtils.findTerminalCjkFallback(14);
     assumeTrue(cjk != null, "no CJK font installed");
@@ -217,19 +219,25 @@ class FontUtilsTest {
     int descent = FontUtils.descentOf(14, cjk.getFamily());
     int ascent = FontUtils.ascentOf(14, cjk.getFamily());
     assumeTrue(advance > 0 && descent >= 0 && ascent >= 0, "CJK font metrics unavailable");
-    // Pretend the primary cell is narrower than the fallback's half-width,
-    // as JetBrains Mono (8px) is vs YaHei UI (14px ideograph). Pass matching
-    // descent + ascent so only the horizontal correction applies.
-    int narrowCell = Math.max(1, (int) Math.floor(advance * 0.4));
-    Font out = FontUtils.fitCjkToGrid(cjk, 14, narrowCell, descent, ascent);
+    // Primary cell slightly wider than half the ideograph advance, so two cells
+    // exceed the natural advance — e.g. JetBrains Mono (8px cell) vs YaHei UI
+    // (14px ideograph): extra = 2*8 - 14 = +2. advance/2 + 2 forces extra into
+    // the [2, 6] pad window regardless of whether advance is odd or even.
+    int cellWidth = advance / 2 + 2;
+    int extra = 2 * cellWidth - advance;
+    assumeTrue(extra >= 2 && extra <= 6, "expected horizontal correction, got extra=" + extra);
+    Font out = FontUtils.fitCjkToGrid(cjk, 14, cellWidth, descent, ascent);
     assertNotNull(out);
     if (out == cjk) return; // no correction applied (already aligned / capped)
     // The glyph outline must not be deformed (width/height unchanged; a
-    // vertical translation would move it but never squish it).
+    // translation would move it but never squish it).
     assertGlyphNotDeformed(cjk, out);
-    // The measured advance (charsWidth, tracking-aware) must now equal 2 * narrowCell.
-    assertEquals(2 * narrowCell, charsWidthOf(out),
+    // The measured advance (charsWidth, tracking-aware) must now equal 2 * cellWidth.
+    assertEquals(2 * cellWidth, charsWidthOf(out),
         "padded CJK fallback must land on exactly two primary cells");
+    // The glyph must be re-centred: shifted right by extra/2 so the leading gap
+    // before the CJK char is restored (not collapsed by trailing-only TRACKING).
+    assertGlyphShiftedRightBy(out, cjk, extra / 2.0);
   }
 
   @Test
@@ -350,6 +358,23 @@ class FontUtilsTest {
       double y1 = shifted.createGlyphVector(frc, "界").getGlyphOutline(0).getBounds2D().getY();
       assertEquals(-dy, y1 - y0, 0.5,
           "glyph must be translated up by " + dy + "px (outline y must decrease)");
+    } finally {
+      g.dispose();
+      img.flush();
+    }
+  }
+
+  /** Assert the glyph was translated rightward by {@code dx} px (outline x shifted +dx). */
+  private static void assertGlyphShiftedRightBy(Font shifted, Font original, double dx) {
+    java.awt.image.BufferedImage img =
+        new java.awt.image.BufferedImage(1, 1, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+    java.awt.Graphics2D g = img.createGraphics();
+    try {
+      java.awt.font.FontRenderContext frc = g.getFontRenderContext();
+      double x0 = original.createGlyphVector(frc, "界").getGlyphOutline(0).getBounds2D().getX();
+      double x1 = shifted.createGlyphVector(frc, "界").getGlyphOutline(0).getBounds2D().getX();
+      assertEquals(dx, x1 - x0, 0.5,
+          "glyph must be translated right by " + dx + "px (outline x must increase)");
     } finally {
       g.dispose();
       img.flush();

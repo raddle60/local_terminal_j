@@ -38,7 +38,14 @@ public class CompositeFontJediTermWidget extends JediTermWidget {
                                               @NotNull TerminalTextBuffer terminalTextBuffer) {
     int size = (int) settingsProvider.getTerminalFontSize();
     FontResolver resolver = buildFallbackChain(size);
-    return new CompositeFontPanel(settingsProvider, terminalTextBuffer, styleState, resolver);
+    CompositeFontPanel panel = new CompositeFontPanel(settingsProvider, terminalTextBuffer, styleState, resolver);
+    // Default to a vertical-bar (I-beam) cursor so ordinary shell input shows a
+    // thin caret instead of JediTerm's block default. Shells leave the cursor
+    // shape unset, so this is what users see while typing. Full-screen apps that
+    // want a different shape (e.g. vim's normal-mode block) still override it at
+    // runtime via DECSCUSR (CSI Ps SP q), which JediTerm already honours.
+    panel.setDefaultCursorShape(CompositeFontPanel.DEFAULT_CURSOR_SHAPE);
+    return panel;
   }
 
   /**

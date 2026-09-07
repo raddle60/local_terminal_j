@@ -2,6 +2,7 @@ package local.term;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.jediterm.terminal.CursorShape;
 import com.jediterm.terminal.TextStyle;
 import com.jediterm.terminal.model.StyleState;
 import com.jediterm.terminal.model.TerminalLine;
@@ -27,7 +28,6 @@ import java.awt.event.InputEvent;
 import java.awt.event.InputMethodEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
-import java.text.AttributedCharacterIterator;
 import java.util.*;
 import javax.swing.BoundedRangeModel;
 
@@ -73,6 +73,10 @@ import javax.swing.BoundedRangeModel;
 public class CompositeFontPanel extends TerminalPanel {
   private static final Logger LOG = LoggerFactory.getLogger(CompositeFontPanel.class);
 
+  // Default cursor shape for the terminal (applied in CompositeFontJediTermWidget)
+  // and the target that DECSCUSR 0/1 revert to (see #setCursorShape).
+  static final CursorShape DEFAULT_CURSOR_SHAPE = CursorShape.BLINK_VERTICAL_BAR;
+
   private FontResolver resolver;
   // Pre-derived bold/italic variants of every fallback font. Recomputed
   // once at construction so getFontToDisplay doesn't deriveFont on every
@@ -81,13 +85,6 @@ public class CompositeFontPanel extends TerminalPanel {
   // Size the fallback chain was built for. Tracked so applyFontSize knows
   // when the chain is stale (otherwise we'd rebuild on every tick).
   private int fallbackSize;
-
-  // IME composition text (e.g. pinyin) currently being typed before it is
-  // committed to the shell. Mirrors JediTerm's private
-  // myInputMethodUncommittedChars so paintComponent can re-draw it with the
-  // same baseline as normal text — JediTerm's own drawing hardcodes a -3 px
-  // baseline that drops the composition letters below the line.
-  private String imeCompositionText;
 
   /**
    * 全局字体解析缓存,所有CompositeFontPanel实例共享。
@@ -435,8 +432,12 @@ public class CompositeFontPanel extends TerminalPanel {
       return;
     }
     gfx.setRenderingHints(buildAntialiasingHints());
+    String imeText = suppressDefaultImeDrawing();
     super.paintComponent(g);
-    redrawImeComposition(gfx);
+    restoreImeText(imeText);
+    if (imeText != null && !imeText.isEmpty()) {
+      drawImeComposition(gfx, imeText);
+    }
     repaintEmojiChars(gfx);
     repaintAmbiguousWideChars(gfx);
 
@@ -858,29 +859,9 @@ public class CompositeFontPanel extends TerminalPanel {
   @Override
   protected void processInputMethodEvent(InputMethodEvent e) {
     super.processInputMethodEvent(e);
-    // Mirror JediTerm's private myInputMethodUncommittedChars so paintComponent
-    // can re-draw the composition with a baseline that matches normal text.
-    imeCompositionText = e.getCommittedCharacterCount() > 0
-        ? null
-        : uncommittedChars(e.getText());
     if (e.getID() == InputMethodEvent.INPUT_METHOD_TEXT_CHANGED) {
       repaint();
     }
-  }
-
-  /**
-   * Mirror of JediTerm's private {@code TerminalPanel.uncommittedChars}: the
-   * printable characters of the IME's attributed text, or {@code null} when
-   * there is nothing uncommitted. Needed because that field is private and we
-   * must know what to re-draw.
-   */
-  private static String uncommittedChars(AttributedCharacterIterator text) {
-    if (text == null) return null;
-    StringBuilder sb = new StringBuilder();
-    for (char c = text.first(); c != AttributedCharacterIterator.DONE; c = text.next()) {
-      if (c >= 0x20 && c != 0x7F) sb.append(c);
-    }
-    return sb.toString();
   }
 
   // Cursor position of the JediTerm panel, read reflectively from the
@@ -890,11 +871,13 @@ public class CompositeFontPanel extends TerminalPanel {
   private static final java.lang.reflect.Field CURSOR_FIELD;
   private static final java.lang.reflect.Method CURSOR_COORD_X;
   private static final java.lang.reflect.Method CURSOR_COORD_Y;
+  private static final java.lang.reflect.Field IME_TEXT_FIELD;
 
   static {
     java.lang.reflect.Field field = null;
     java.lang.reflect.Method coordX = null;
     java.lang.reflect.Method coordY = null;
+    java.lang.reflect.Field imeTextField = null;
     try {
       field = TerminalPanel.class.getDeclaredField("myCursor");
       field.setAccessible(true);
@@ -902,12 +885,15 @@ public class CompositeFontPanel extends TerminalPanel {
       coordY = field.getType().getMethod("getCoordY");
       coordX.setAccessible(true);
       coordY.setAccessible(true);
+      imeTextField = TerminalPanel.class.getDeclaredField("myInputMethodUncommittedChars");
+      imeTextField.setAccessible(true);
     } catch (ReflectiveOperationException e) {
       LOG.warn("Unable to access JediTerm cursor internals; IME composition baseline correction disabled", e);
     }
     CURSOR_FIELD = field;
     CURSOR_COORD_X = coordX;
     CURSOR_COORD_Y = coordY;
+    IME_TEXT_FIELD = imeTextField;
   }
 
   /**
@@ -931,19 +917,51 @@ public class CompositeFontPanel extends TerminalPanel {
   }
 
   /**
-   * Re-draw the IME composition text with the same baseline normal text uses.
-   * JediTerm's private {@code drawInputMethodUncommitedChars} hardcodes a
-   * {@code -3} pixel baseline offset independent of the font's descent and line
-   * spacing, so on a mixed line the pinyin letters drop below the surrounding
-   * glyphs. This erases that drawing and re-stamps the letters at
-   * {@code (rowBottom - spaceBetweenLines/2 - descent)} — the exact formula
-   * {@code drawChars} applies to every other run.
-   *
-   * <p>No-ops when the IME has no uncommitted text (captured in
-   * {@link #processInputMethodEvent}) or when the cursor can't be read.
+   * Read JediTerm's private {@code myInputMethodUncommittedChars} and clear it
+   * for the duration of {@code super.paintComponent} so JediTerm's own
+   * mis-aligned IME drawing is suppressed and we can draw the composition once
+   * at the correct baseline (see {@link #drawImeComposition}). Returns the text
+   * that was present. Returns {@code null} both when there is nothing
+   * uncommitted and when reflection is unavailable — in the latter case we also
+   * leave the upstream drawing untouched and skip our own draw, so the worst
+   * case is the pre-existing mis-aligned rendering rather than a double-draw.
    */
-  private void redrawImeComposition(Graphics2D gfx) {
-    String text = imeCompositionText;
+  private String suppressDefaultImeDrawing() {
+    if (IME_TEXT_FIELD == null) return null;
+    try {
+      String text = (String) IME_TEXT_FIELD.get(this);
+      if (text != null && !text.isEmpty()) {
+        IME_TEXT_FIELD.set(this, null);
+      }
+      return text;
+    } catch (ReflectiveOperationException e) {
+      LOG.debug("Unable to suppress JediTerm IME drawing", e);
+      return null;
+    }
+  }
+
+  /**
+   * Restore the IME text cleared by {@link #suppressDefaultImeDrawing} so
+   * JediTerm's own bookkeeping stays consistent after this paint pass.
+   */
+  private void restoreImeText(String text) {
+    if (IME_TEXT_FIELD == null) return;
+    try {
+      IME_TEXT_FIELD.set(this, text);
+    } catch (ReflectiveOperationException e) {
+      LOG.debug("Unable to restore JediTerm IME text", e);
+    }
+  }
+
+  /**
+   * Draw the IME composition text at the same baseline normal text uses.
+   * JediTerm's private {@code drawInputMethodUncommitedChars} hardcodes a
+   * {@code -3} pixel offset independent of the font's descent and line spacing,
+   * dropping the pinyin letters below the line. By suppressing that drawing and
+   * calling this once, we avoid the double-draw the old erase-and-restamp
+   * approach produced (the "repeated last letter" ghost).
+   */
+  private void drawImeComposition(Graphics2D gfx, String text) {
     if (text == null || text.isEmpty()) return;
     int[] cell = currentCursorCell();
     if (cell == null) return;
@@ -951,7 +969,17 @@ public class CompositeFontPanel extends TerminalPanel {
     int charWidth = myCharSize.width;
     int charHeight = myCharSize.height;
     int len = text.length() * charWidth;
-    int xCoord = (cell[0] + 1) * charWidth + getInsetX();
+    // Start at the cursor cell itself (not one full cell past it, as JediTerm
+    // does for a block cursor). The background fill below therefore also covers
+    // the leading edge of the cursor cell, so the blinking caret's off-frame
+    // never leaves a stray pixel peeking through beside the letters.
+    int xCoord = cell[0] * charWidth + getInsetX();
+
+    // Fill the composition cells' background first (the same full-cell rect the
+    // normal text path paints) so existing text behind the composition is
+    // covered instead of showing through underneath the letters.
+    gfx.setColor(getBackground());
+    gfx.fillRect(xCoord, cell[1] * charHeight, len, charHeight);
 
     // ASCII pinyin resolves to the primary font; a non-ASCII composition run
     // resolves to the fallback that can actually render it.
@@ -964,12 +992,6 @@ public class CompositeFontPanel extends TerminalPanel {
     int spaceBetweenLines = Math.max(0, ((charHeight - fontMetricsHeight) / 2) * 2);
     int baseLine = (cell[1] + 1) * charHeight - spaceBetweenLines / 2 - descent;
 
-    // Erase JediTerm's own drawing (which sits `descent - 3` px lower); the
-    // rect covers the mis-placed glyph plus its dotted underline without
-    // spilling past the glyph bounds.
-    gfx.setColor(getBackground());
-    gfx.fillRect(xCoord, cell[1] * charHeight - 3, len, charHeight + descent);
-
     gfx.setColor(getForeground());
     gfx.drawString(text, xCoord, baseLine);
 
@@ -978,6 +1000,22 @@ public class CompositeFontPanel extends TerminalPanel {
         new float[]{0, 2, 0, 2}, 0));
     gfx.drawLine(xCoord, baseLine, xCoord + len, baseLine);
     gfx.setStroke(saved);
+  }
+
+  /**
+   * Interpret DECSCUSR 0/1 as "restore the default cursor" rather than forcing a
+   * block. JediTerm maps both {@code CSI 0 q} and {@code CSI 1 q} to
+   * {@link CursorShape#BLINK_BLOCK}, but xterm semantics define 0 as "revert to
+   * the terminal's configured default". Full-screen apps (e.g. Claude Code) emit
+   * {@code CSI 0 q} on exit to reset the cursor — without this override that
+   * leaves a block behind instead of the configured vertical bar.
+   */
+  @Override
+  public void setCursorShape(CursorShape cursorShape) {
+    if (cursorShape == CursorShape.BLINK_BLOCK) {
+      cursorShape = DEFAULT_CURSOR_SHAPE;
+    }
+    super.setCursorShape(cursorShape);
   }
 
   // ---- scroll to cursor after paste ----

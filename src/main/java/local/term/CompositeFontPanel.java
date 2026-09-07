@@ -17,14 +17,17 @@ import org.slf4j.LoggerFactory;
 
 import java.awt.Color;
 import java.awt.Component;
+import java.awt.BasicStroke;
 import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
+import java.awt.Stroke;
 import java.awt.event.InputEvent;
 import java.awt.event.InputMethodEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
+import java.text.AttributedCharacterIterator;
 import java.util.*;
 import javax.swing.BoundedRangeModel;
 
@@ -78,6 +81,13 @@ public class CompositeFontPanel extends TerminalPanel {
   // Size the fallback chain was built for. Tracked so applyFontSize knows
   // when the chain is stale (otherwise we'd rebuild on every tick).
   private int fallbackSize;
+
+  // IME composition text (e.g. pinyin) currently being typed before it is
+  // committed to the shell. Mirrors JediTerm's private
+  // myInputMethodUncommittedChars so paintComponent can re-draw it with the
+  // same baseline as normal text — JediTerm's own drawing hardcodes a -3 px
+  // baseline that drops the composition letters below the line.
+  private String imeCompositionText;
 
   /**
    * 全局字体解析缓存,所有CompositeFontPanel实例共享。
@@ -426,6 +436,7 @@ public class CompositeFontPanel extends TerminalPanel {
     }
     gfx.setRenderingHints(buildAntialiasingHints());
     super.paintComponent(g);
+    redrawImeComposition(gfx);
     repaintEmojiChars(gfx);
     repaintAmbiguousWideChars(gfx);
 
@@ -847,9 +858,126 @@ public class CompositeFontPanel extends TerminalPanel {
   @Override
   protected void processInputMethodEvent(InputMethodEvent e) {
     super.processInputMethodEvent(e);
+    // Mirror JediTerm's private myInputMethodUncommittedChars so paintComponent
+    // can re-draw the composition with a baseline that matches normal text.
+    imeCompositionText = e.getCommittedCharacterCount() > 0
+        ? null
+        : uncommittedChars(e.getText());
     if (e.getID() == InputMethodEvent.INPUT_METHOD_TEXT_CHANGED) {
       repaint();
     }
+  }
+
+  /**
+   * Mirror of JediTerm's private {@code TerminalPanel.uncommittedChars}: the
+   * printable characters of the IME's attributed text, or {@code null} when
+   * there is nothing uncommitted. Needed because that field is private and we
+   * must know what to re-draw.
+   */
+  private static String uncommittedChars(AttributedCharacterIterator text) {
+    if (text == null) return null;
+    StringBuilder sb = new StringBuilder();
+    for (char c = text.first(); c != AttributedCharacterIterator.DONE; c = text.next()) {
+      if (c >= 0x20 && c != 0x7F) sb.append(c);
+    }
+    return sb.toString();
+  }
+
+  // Cursor position of the JediTerm panel, read reflectively from the
+  // superclass's private `myCursor` field. Resolved once; null when the
+  // reflection target is unavailable (a newer JediTerm layout), in which case
+  // the IME composition re-draw degrades to leaving the upstream drawing as-is.
+  private static final java.lang.reflect.Field CURSOR_FIELD;
+  private static final java.lang.reflect.Method CURSOR_COORD_X;
+  private static final java.lang.reflect.Method CURSOR_COORD_Y;
+
+  static {
+    java.lang.reflect.Field field = null;
+    java.lang.reflect.Method coordX = null;
+    java.lang.reflect.Method coordY = null;
+    try {
+      field = TerminalPanel.class.getDeclaredField("myCursor");
+      field.setAccessible(true);
+      coordX = field.getType().getMethod("getCoordX");
+      coordY = field.getType().getMethod("getCoordY");
+      coordX.setAccessible(true);
+      coordY.setAccessible(true);
+    } catch (ReflectiveOperationException e) {
+      LOG.warn("Unable to access JediTerm cursor internals; IME composition baseline correction disabled", e);
+    }
+    CURSOR_FIELD = field;
+    CURSOR_COORD_X = coordX;
+    CURSOR_COORD_Y = coordY;
+  }
+
+  /**
+   * The cursor cell the JediTerm panel is currently on, as an {@code [x, y]}
+   * pair (the same values its private {@code drawInputMethodUncommitedChars}
+   * reads via {@code myCursor.getCoordX()} / {@code getCoordY()}). Returns
+   * {@code null} when reflection is unavailable.
+   */
+  private int[] currentCursorCell() {
+    if (CURSOR_FIELD == null || CURSOR_COORD_X == null || CURSOR_COORD_Y == null) return null;
+    try {
+      Object cursor = CURSOR_FIELD.get(this);
+      if (cursor == null) return null;
+      int x = (Integer) CURSOR_COORD_X.invoke(cursor);
+      int y = (Integer) CURSOR_COORD_Y.invoke(cursor);
+      return new int[]{x, y};
+    } catch (ReflectiveOperationException e) {
+      LOG.debug("Unable to read JediTerm cursor position for IME redraw", e);
+      return null;
+    }
+  }
+
+  /**
+   * Re-draw the IME composition text with the same baseline normal text uses.
+   * JediTerm's private {@code drawInputMethodUncommitedChars} hardcodes a
+   * {@code -3} pixel baseline offset independent of the font's descent and line
+   * spacing, so on a mixed line the pinyin letters drop below the surrounding
+   * glyphs. This erases that drawing and re-stamps the letters at
+   * {@code (rowBottom - spaceBetweenLines/2 - descent)} — the exact formula
+   * {@code drawChars} applies to every other run.
+   *
+   * <p>No-ops when the IME has no uncommitted text (captured in
+   * {@link #processInputMethodEvent}) or when the cursor can't be read.
+   */
+  private void redrawImeComposition(Graphics2D gfx) {
+    String text = imeCompositionText;
+    if (text == null || text.isEmpty()) return;
+    int[] cell = currentCursorCell();
+    if (cell == null) return;
+
+    int charWidth = myCharSize.width;
+    int charHeight = myCharSize.height;
+    int len = text.length() * charWidth;
+    int xCoord = (cell[0] + 1) * charWidth + getInsetX();
+
+    // ASCII pinyin resolves to the primary font; a non-ASCII composition run
+    // resolves to the fallback that can actually render it.
+    Font font = getFontToDisplay(text.toCharArray(), 0, text.length(), TextStyle.EMPTY);
+    gfx.setFont(font);
+    int descent = gfx.getFontMetrics(font).getDescent();
+    // Derive spaceBetweenLines the same way establishFontMetrics() does so the
+    // baseline lands exactly where normal text's does.
+    int fontMetricsHeight = gfx.getFontMetrics(font).getHeight();
+    int spaceBetweenLines = Math.max(0, ((charHeight - fontMetricsHeight) / 2) * 2);
+    int baseLine = (cell[1] + 1) * charHeight - spaceBetweenLines / 2 - descent;
+
+    // Erase JediTerm's own drawing (which sits `descent - 3` px lower); the
+    // rect covers the mis-placed glyph plus its dotted underline without
+    // spilling past the glyph bounds.
+    gfx.setColor(getBackground());
+    gfx.fillRect(xCoord, cell[1] * charHeight - 3, len, charHeight + descent);
+
+    gfx.setColor(getForeground());
+    gfx.drawString(text, xCoord, baseLine);
+
+    Stroke saved = gfx.getStroke();
+    gfx.setStroke(new BasicStroke(1, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 0,
+        new float[]{0, 2, 0, 2}, 0));
+    gfx.drawLine(xCoord, baseLine, xCoord + len, baseLine);
+    gfx.setStroke(saved);
   }
 
   // ---- scroll to cursor after paste ----

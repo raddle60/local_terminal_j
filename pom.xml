@@ -57,6 +57,16 @@
       <artifactId>pty4j</artifactId>
       <version>${pty4j.version}</version>
     </dependency>
+    <!-- JNA: kernel32 SetDllDirectory / GetDllDirectory binding for
+         WinDllDirectoryGuard. Pulled in at runtime scope by pty4j,
+         promoted to compile scope so the guard's hand-declared
+         com.sun.jna.Native / WString / StdCallLibrary references
+         resolve at compile time. -->
+    <dependency>
+      <groupId>net.java.dev.jna</groupId>
+      <artifactId>jna</artifactId>
+      <version>5.14.0</version>
+    </dependency>
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>

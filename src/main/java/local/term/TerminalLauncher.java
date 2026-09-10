@@ -171,7 +171,22 @@ public class TerminalLauncher {
           .setInitialColumns(120)
           .setInitialRows(30);
 
-      process = builder.start();
+      // Wrap the spawn in a save/clear/restore of the JVM's
+      // SetDllDirectory value. jpackage's Windows launcher sets it to
+      // <appImageRoot>\runtime\bin so the JVM can load its own native
+      // DLLs; that value is inherited by every descendant process, so
+      // shells we launch (and anything they spawn) prefer the bundled
+      // runtime over the system DLL search order. Clearing it for the
+      // duration of CreateProcess breaks the chain at the right
+      // boundary — the JVM still has runtime\bin on its own path once
+      // the guard returns.
+      process = WinDllDirectoryGuard.runUnderCleared(() -> {
+        try {
+          return builder.start();
+        } catch (java.io.IOException e) {
+          throw new java.io.UncheckedIOException(e);
+        }
+      });
       // Always decode as UTF-8. cmd/PowerShell/bash all render correctly
       // when the terminal pane is set up to display UTF-8.
       connector = new PtyProcessTtyConnector(process, StandardCharsets.UTF_8,

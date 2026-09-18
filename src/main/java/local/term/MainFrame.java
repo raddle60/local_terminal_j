@@ -309,6 +309,13 @@ public class MainFrame extends JFrame {
     // renders even if no monospaced CJK font is installed.
     Font cjkResolved = FontUtils.findTerminalCjkFallback(size);
     DarkSettingsProvider.setCjkFallbackFont(cjkResolved);
+    // Push the new slot choices into every already-open session. The static
+    // setters above already update what NEW sessions see, but open sessions
+    // cached their primary font + variants at launch and would otherwise stay
+    // on the old font until the user closed and re-opened the tab. Calling
+    // applyFonts() rebuilds each open panel's primary font and fallback
+    // chain from the now-current static state.
+    terminalPanel.applyFonts();
     try {
       settings.save();
       LOG.info("Settings saved: primary={}, cjk={}, symbol={}, emoji={}, size={}",

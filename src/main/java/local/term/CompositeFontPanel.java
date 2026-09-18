@@ -227,19 +227,65 @@ public class CompositeFontPanel extends TerminalPanel {
   public void applyFontSize(int size) {
     if (size == fallbackSize) return;
     fallbackSize = size;
-    // Rebuild the primary font + cell metrics from the current settings.
-    // reinitFontAndResize is inherited from JediTerm's TerminalPanel and
-    // is the only public-ish entry point that recomputes myCharSize.width
-    // / myCharSize.height — calling initFont() alone leaves the cell grid
-    // at the old size and the new font would clip.
+    applyFonts();
+  }
+
+  /**
+   * Re-init the panel after a Settings dialog OK that changed any of the
+   * four font slots (primary / CJK / Symbol / Emoji). Rebuilds the
+   * primary font + fallback chain at the panel's current
+   * {@link #fallbackSize}, clears the font-resolution cache, and repaints
+   * so the new fonts render on the next paint cycle.
+   *
+   * <p>Doesn't take a size argument on purpose — the panel's
+   * {@code fallbackSize} field is the source of truth for "what size am
+   * I at", kept in sync by {@link #applyFontSize(int)}. Reading it
+   * here means the two entry methods can't disagree on what size they
+   * rebuild at, which would otherwise leave a half-applied change if a
+   * caller invoked {@code applyFontSize(newSize)} followed by
+   * {@code applyFonts()} with stale arguments.
+   *
+   * <p>The caller (MainFrame.openSettings) must update the static slot
+   * state on {@link DarkSettingsProvider} — {@code setOverrideFontFamily},
+   * {@code setCjkFontFamily}, {@code setSymbolFontFamily},
+   * {@code setEmojiFontFamily} — BEFORE invoking this method, so
+   * {@code reinitFontAndResize} reads the new primary family from
+   * {@code DarkSettingsProvider.getTerminalFont()} and
+   * {@link CompositeFontJediTermWidget#buildFallbackChain} reads the new
+   * fallback families from the per-slot getters.
+   */
+  public void applyFonts() {
+    int size = fallbackSize;
+    rebuildPrimaryFont();
+    rebuildFallbackChain(size);
+    clearFontCache();
+    repaint();
+  }
+
+  /**
+   * Recompute the primary font + cell metrics from the current
+   * {@link DarkSettingsProvider} state. Inherited {@code reinitFontAndResize}
+   * is the only public-ish entry point that recomputes
+   * {@code myCharSize.width}/{@code myCharSize.height} — {@code initFont()}
+   * alone leaves the cell grid at the old size and the new font would clip.
+   * Also posts a PTY resize via {@code sizeTerminalFromComponent()} so a
+   * changed cell width doesn't leave the running shell at the old
+   * column count.
+   */
+  private void rebuildPrimaryFont() {
     reinitFontAndResize();
-    // Rebuild the fallback chain so each fallback font is at the new
-    // point size. buildFallbackChain reads the static font-family
-    // overrides on DarkSettingsProvider — those were set BEFORE this
-    // call so the chain reflects the user's current slot choices.
+  }
+
+  /**
+   * Rebuild the CJK / Symbol / Emoji fallback chain at {@code size}. Reads
+   * the static per-slot family setters on {@link DarkSettingsProvider} and
+   * re-derives bold/italic variants for each entry. No-op-safe when the
+   * resolver ends up empty — the panel still renders ASCII via the
+   * primary and lets the OS substitute for missing glyphs.
+   */
+  private void rebuildFallbackChain(int size) {
     FontResolver newResolver = CompositeFontJediTermWidget.buildFallbackChain(size);
     this.resolver = newResolver != null ? newResolver : new FontResolver();
-    // Recompute bold/italic variants for the new chain.
     List<Font[]> fresh = new ArrayList<>(this.resolver.fallbacks().size());
     for (Font f : this.resolver.fallbacks()) {
       fresh.add(new Font[]{
@@ -250,12 +296,6 @@ public class CompositeFontPanel extends TerminalPanel {
       });
     }
     this.variants = fresh;
-    // 清空字体解析缓存:字体大小变化后,之前缓存的Font对象已经过时
-    clearFontCache();
-    // Force a repaint so the new metrics + new fonts render on the next
-    // paint cycle. Without this, the change is invisible until the user
-    // scrolls or the cursor blinks (whichever comes first).
-    repaint();
   }
 
   @Override

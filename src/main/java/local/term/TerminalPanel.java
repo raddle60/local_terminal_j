@@ -356,6 +356,37 @@ public class TerminalPanel extends JPanel {
   }
 
   /**
+   * Apply a font-family change to every open session. Called by
+   * {@code MainFrame} after the Settings dialog OK so a switch in any
+   * of the four slots (primary / CJK / Symbol / Emoji) reaches every
+   * already-open terminal without closing it.
+   *
+   * <p>{@link CompositeFontPanel#applyFonts()} rebuilds the primary
+   * font via {@code reinitFontAndResize()} (which re-reads
+   * {@link DarkSettingsProvider#getTerminalFont()} so the new family
+   * family flows through) and re-derives the fallback chain from the
+   * updated static slot fields on {@link DarkSettingsProvider}. The
+   * caller (MainFrame) MUST update those static fields BEFORE invoking
+   * this method, otherwise the chain will still reflect the previous
+   * settings.
+   *
+   * <p>Same EDT / non-CompositeFontPanel guard as
+   * {@link #applyFontSize(int)} — non-composite widgets can't honour
+   * a live change because their font was set once at construction.
+   */
+  public void applyFonts() {
+    for (TerminalSession session : sessions.values()) {
+      CompositeFontPanel panel = session.getCompositePanel();
+      if (panel == null) continue;
+      if (SwingUtilities.isEventDispatchThread()) {
+        panel.applyFonts();
+      } else {
+        SwingUtilities.invokeLater(panel::applyFonts);
+      }
+    }
+  }
+
+  /**
    * Tab header: optional shell icon + name label + close button, with a
    * 1 px orange accent strip across the top while the owning session
    * is in its output-highlight window. Icon-then-title matches the tree

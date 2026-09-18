@@ -98,8 +98,21 @@ public final class FontUtils {
    * probe itself is platform-independent; we rely on
    * {@link Font#canDisplayUpTo} to tell us whether the font ships the
    * corresponding color glyphs.
+   *
+   * <p><b>Why no {@code U+FE0F} variation selector.</b> The original probe
+   * used {@code "😀🚀✨❤️⭐"} (heart with VS-16). On Windows, Java's
+   * {@link Font#canDisplayUpTo} consults the font's cmap table — and
+   * color-emoji fonts (Noto Color Emoji, older Segoe UI Emoji builds)
+   * cover BMP/SMP code points but NOT the variation-selector block
+   * {@code U+FE00–U+FE0F}, since VS-16 is handled by the rendering layer
+   * rather than the cmap. The result: a perfectly good color-emoji font
+   * was being filtered out of the Emoji font slot dropdown with
+   * {@code canDisplayUpTo == 6} (the VS-16 index). Stripping the VS-16
+   * from the heart restores {@code canDisplayUpTo == -1} for Noto Color
+   * Emoji and friends while keeping the other four probe chars as the
+   * BMP/SMP coverage gate.
    */
-  private static final String EMOJI_PROBE = "😀🚀✨❤️⭐";
+  private static final String EMOJI_PROBE = "😀🚀✨❤⭐";
 
   /**
    * General-symbol probe — box-drawing, arrows, geometric shapes, math

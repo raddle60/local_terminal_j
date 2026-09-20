@@ -139,18 +139,20 @@ public class CompositeFontJediTermWidget extends JediTermWidget {
     cjk = FontUtils.fitCjkToGrid(cjk, size, primaryCellWidth(size), primaryDescent(size), primaryAscent(size));
     if (cjk != null) chain.add(cjk);
 
-    // Symbol slot — placed BEFORE emoji so ✔ uses the narrower text-
-    // presentation symbol font rather than the ~2.4-cell color emoji.
-    String symbolFamily = DarkSettingsProvider.getSymbolFontFamily();
-    Font symbol;
-    if (symbolFamily != null && !symbolFamily.isBlank()) {
-      symbol = new Font(symbolFamily, Font.PLAIN, size);
-    } else {
-      symbol = FontUtils.findGeneralSymbolFont(size);
-    }
-    if (symbol != null) chain.add(symbol);
-
-    // Emoji slot
+    // Emoji slot — MUST come before the symbol slot. On Windows the
+    // auto-detected general-symbol font is Segoe UI Symbol, and its
+    // {@code Font.canDisplayUpTo} returns -1 for SMP emoji codepoints
+    // (the cmap entry for the lone-surrogate codepoint 0xD83D / 0xDE80
+    // resolves through the Unicode symbol fallback that the Symbol
+    // font claims coverage for, even though the rendered glyph is a
+    // thin outline rather than a COLR/CBDT bitmap). With the chain
+    // ordered Symbol → Emoji, chooseFont picks Segoe UI Symbol for
+    // every 🚀 ✨ 🎉 cell, draws the outline in the cell's foreground
+    // colour, and the user sees B&W where they expect colour. Putting
+    // Emoji first makes chooseFont pick the colour-emoji font for
+    // emoji codepoints and fall through to Symbol for the non-emoji
+    // symbols (←→ ★ etc.) that the emoji font may not cover as
+    // narrowly.
     String emojiFamily = DarkSettingsProvider.getEmojiFontFamily();
     Font emoji;
     if (emojiFamily != null && !emojiFamily.isBlank()) {
@@ -159,6 +161,20 @@ public class CompositeFontJediTermWidget extends JediTermWidget {
       emoji = FontUtils.findEmojiFont(size);
     }
     if (emoji != null) chain.add(emoji);
+
+    // Symbol slot — general symbols (box-drawing, arrows, math) the
+    // emoji font might not cover as narrowly as a text-presentation
+    // symbol font. Placed after Emoji so the Symbol font's "I'll take
+    // any BMP/SMP codepoint that has a cmap entry" behaviour doesn't
+    // eclipse the colour-emoji font for actual emoji.
+    String symbolFamily = DarkSettingsProvider.getSymbolFontFamily();
+    Font symbol;
+    if (symbolFamily != null && !symbolFamily.isBlank()) {
+      symbol = new Font(symbolFamily, Font.PLAIN, size);
+    } else {
+      symbol = FontUtils.findGeneralSymbolFont(size);
+    }
+    if (symbol != null) chain.add(symbol);
 
     FontResolver resolver = new FontResolver(chain);
 
